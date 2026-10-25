@@ -1,0 +1,6 @@
+{
+  "source": "src/vlnce_baselines/awarevln_trainer.py",
+  "sha256": "d58d2257f820ee00c01f6bc44ab142f2e65c56df6a916807679059f61e3dcf3b",
+  "applied": false,
+  "activation": "next new run only; update frozen source identity"
+}

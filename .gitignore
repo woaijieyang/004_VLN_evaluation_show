@@ -1,0 +1,12 @@
+# Local configuration and runtime state never belong in source control.
+.venv/
+.assets/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+outputs/
+config/service.json
+config/sources.json
+config/legacy/*.json

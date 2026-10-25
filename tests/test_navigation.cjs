@@ -1,0 +1,11 @@
+const assert=require('node:assert/strict');
+const nav=require('../process_show/web/navigation.js');
+assert.deepEqual(nav.bounds([3,0,7],[],[],false),[-1,3,7,11]);
+const records=[{step:0,pose:{position:[0,0,0]}},{step:1,pose:{position:[0,0,0]}},{step:2,pose:{position:[1,0,0]}}];
+assert.equal(nav.arrivals(records,2).reduce((n,g)=>n+g.steps.length,0),3);
+assert.equal(nav.label(nav.arrivals(records,2)[0].steps),'0–1');
+assert.deepEqual(nav.bounds([0,0,0],records,[{position:[20,0,-10]}],true),[-2,-12,22,2]);
+assert.equal(nav.arrivals(records,0).length,1);
+assert.equal(nav.arrivals(records,0,true).length,2);
+assert.equal(nav.label([1,14]),'1,14');
+console.log('Navigation geometry: 7 assertions passed');

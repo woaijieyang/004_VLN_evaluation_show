@@ -1,0 +1,28 @@
+--- a/src/vlnce_baselines/awarevln_trainer.py
++++ b/src/vlnce_baselines/awarevln_trainer.py
+@@ -141,13 +141,17 @@
+         torch.manual_seed(config.TASK_CONFIG.SEED)
+         observations = envs.reset()
+         recorder = TraceRecorder.from_environment()
++        from process_show.case1_hook import Case1Observer
++        process_show_observer = Case1Observer()
+         def record_step(actions, stop_source="model"):
+             ep = envs.current_episodes()[0]
+             before = envs.call_at(0, "case1_evaluator_state")
+             recorder.ensure_episode(ep, before)
++            process_show_observer.before(ep, before, observations[0])
+             outcome = envs.step(actions)
+             after = envs.call_at(0, "case1_evaluator_state")
+             recorder.step(ep, actions[0], before, after, outcome[0][2], outcome[0][3], stop_source)
++            process_show_observer.after(actions[0], after, outcome[0], recorder.last_call)
+             return outcome
+         observations = extract_instruction_tokens(
+             observations, self.config.TASK_CONFIG.TASK.INSTRUCTION_SENSOR_UUID
+@@ -423,6 +427,7 @@
+             )
+ 
+         recorder.close()
++        process_show_observer.close()
+         envs.close()
+         if config.use_pbar:
+             pbar.close()

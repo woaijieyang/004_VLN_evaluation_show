@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "process-show"
+version = "0.1.0"
+description = "Step-synchronized, model-independent VLN replay"
+requires-python = ">=3.9"
+dependencies = ["Pillow>=9.5,<13", "imageio-ffmpeg>=0.4.9,<0.7"]
+
+[project.scripts]
+process-show = "process_show.cli:main"
+
+[project.optional-dependencies]
+geometry = ["numpy>=1.23,<3"]
+
+[tool.setuptools.package-data]
+process_show = ["web/*"]
+
+[tool.setuptools]
+package-dir = {"" = ".."}
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["process_show*"]

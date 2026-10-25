@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "auto_start_on_evaluation": true,
+  "stage": "evaluation",
+  "output": "outputs/process-show",
+  "watch_config": "process-show/config/sources.json",
+  "note": "Example only. The native entry generates project_id, project_roots and a preferred port for its actual parent directory."
+}
