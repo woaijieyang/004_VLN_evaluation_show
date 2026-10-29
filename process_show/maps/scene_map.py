@@ -30,6 +30,9 @@ class SceneMaps:
         manifest_path=confined(self.case,Path(source)/'run_manifest.json')
         if not manifest_path.is_file():return None
         manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+        # A generic model manifest is not necessarily a Habitat map profile.
+        # Missing optional map capabilities must not prevent replay or MP4 export.
+        if not isinstance(manifest.get('navmesh_profile'),str) or not isinstance(manifest.get('navmesh_sha256'),str):return None
         profile_path=confined(self.case,Path(manifest['navmesh_profile']))
         if hashlib.sha256(profile_path.read_bytes()).hexdigest()!=manifest['navmesh_sha256']:
             raise ValueError('Navmesh profile identity changed')

@@ -29,6 +29,23 @@ class GenericEvaluationTests(unittest.TestCase):
             self.assertEqual(response.status,200);return json.loads(response.read())
         finally:connection.close()
 
+    def test_generic_manifest_without_habitat_map_can_replay_and_export(self):
+        from PIL import Image
+        from process_show.engine import Engine
+        from process_show.server import make_server
+        from process_show.render import encode
+        folder=self.root/'custom-simulator';folder.mkdir()
+        (folder/'run_manifest.json').write_text(json.dumps({'model':'CustomSimulator','navmesh_profile':'optional-but-not-verified.json'}))
+        value=meta();value.update(model='CustomSimulator',source_run=str(folder),source_kind='live_sensor')
+        engine=Engine(self.store);eid=engine.start(value)
+        engine.step(eid,{'step':0,'action':'RESET','pose':{'position':[0,0,0],'rotation_xyzw':[0,0,0,1]}},Image.new('RGB',(32,32)),render_preview=False)
+        engine.end(eid,{'total_steps':0,'status':'completed','success':False},encode_now=False)
+        server=make_server(self.store,port=0);threading.Thread(target=server.serve_forever,daemon=True).start()
+        try:self.assertFalse(self.get(server.server_port,'/api/episodes/'+eid+'/map')['available'])
+        finally:server.shutdown();server.server_close()
+        encode(self.store,eid)
+        self.assertEqual(self.store.get(eid)['status'],'ready')
+
     def test_arbitrary_models_in_one_jsonl_folder_have_independent_ports_and_live_updates(self):
         folder=self.root/'third-party-evaluation';folder.mkdir()
         a=self.write(folder,'alpha.jsonl','ThirdParty-Alpha',False)
