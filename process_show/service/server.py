@@ -80,13 +80,24 @@ def make_server(store, host="127.0.0.1", port=8765):
             from process_show.service.evaluations import belongs
             return belongs(row['meta'],bound)
 
+        def refresh_binding(self):
+            bound=getattr(self.server,'bound_run',None)
+            if not bound or not bound.get('task_group'):return
+            current=next((r for r in self.server.catalog_provider.get()['runs'] if r['id']==bound['id']),None)
+            if current:self.server.run_sessions.update_binding(current)
+
         def proxy_evaluation(self,parsed):
             match=re.fullmatch(r'/evaluations/([A-Za-z0-9_-]{1,64})/(.*)',parsed.path)
             if not match:return False
             sessions=getattr(self.server,'run_sessions',None)
             if sessions is None:self.json({'error':'Evaluation routing unavailable'},404);return True
             with sessions.lock:entry=sessions.sessions.get(match[1])
-            if entry is None:self.json({'error':'请从选择列表重新打开该测评'},404);return True
+            if entry is None:
+                task=next((r for r in self.server.catalog_provider.get()['runs'] if r.get('task_group') and any(m['id']==match[1] for m in r['members'])),None)
+                if task and self.command=='GET':
+                    opened=sessions.open(task);location=opened['fallback_url'].split('?')[0]+match[2]+('?' + parsed.query if parsed.query else '')
+                    self.send_response(302);self.send_header('Location',location);self.send_header('Content-Length','0');self.end_headers();return True
+                self.json({'error':'请从选择列表重新打开该测评任务'},404);return True
             target='/'+match[2]+('?' + parsed.query if parsed.query else '')
             size=int(self.headers.get('Content-Length','0'))
             if not 0<=size<=65536:raise ValueError('Invalid request size')
@@ -122,11 +133,12 @@ def make_server(store, host="127.0.0.1", port=8765):
                     file = static / ("viewer.html" if path == "/" else path[1:])
                     return self.send_bytes(file.read_bytes(),mimetypes.guess_type(file.name)[0] or "text/plain")
                 if path == '/api/runs':
-                    value=self.server.catalog_provider.get()
+                    value=self.server.catalog_provider.get(force=True) if query.get('refresh')==['1'] else self.server.catalog_provider.get()
                     bound=getattr(self.server,'bound_run',None)
                     value['selected']=next((r for r in value['runs'] if r['id']==bound['id']),bound) if bound else None
                     return self.json(value)
                 if path == "/api/episodes":
+                    self.refresh_binding()
                     rows=store.list()
                     safe_rows=[]
                     for r in rows:
@@ -143,6 +155,7 @@ def make_server(store, host="127.0.0.1", port=8765):
                     bound=getattr(self.server,'bound_run',{})
                     return self.json({'app':'process-show','running':True,'pid':os.getpid(),'api_version':1,'project_root':str(scope.project),'scope_id':scope.scope_id,'project_name':scope.project.name,'project_id':scope.config['project_id'],'service_port':self.server.server_port,'run_id':bound.get('run_id'),'evaluation_id':bound.get('id'),'evaluation':bound or None,'selection_required':hasattr(self.server,'run_sessions') and not bound})
                 if path == '/api/sync':
+                    self.refresh_binding()
                     manager=getattr(self.server,'sync_manager',None)
                     bound=getattr(self.server,'bound_run',None)
                     if hasattr(self.server,'run_sessions') and not bound:return self.json({'sources':[],'configured_sources':0,'expired_episodes':0,'selection_required':True})
@@ -156,6 +169,7 @@ def make_server(store, host="127.0.0.1", port=8765):
                     self.close_connection = True
                     last = None
                     while not self.server.closing.is_set():
+                        self.refresh_binding()
                         from process_show.service.evaluations import revision
                         bound=getattr(self.server,'bound_run',None)
                         signature=revision(store,bound,hasattr(self.server,'run_sessions') and not bound)
@@ -324,7 +338,7 @@ def make_server(store, host="127.0.0.1", port=8765):
                     from runs import select
                     manager=getattr(self.server,'sync_manager',None)
                     if manager is None:return self.json({'error':'此服务未启用运行选择'},409)
-                    chosen=select(scope,body['id'],persist_watch=False)
+                    chosen=select(scope,body['id'],persist_watch=False,catalog=self.server.catalog_provider.get())
                     sessions=getattr(self.server,'run_sessions',None)
                     if sessions is None:return self.json({'error':'测评端口管理器尚未启动'},409)
                     return self.json(dict(sessions.open(chosen),entry_port=self.server.server_port,scope_id=scope.scope_id))

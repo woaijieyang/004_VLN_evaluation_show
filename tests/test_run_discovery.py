@@ -47,6 +47,22 @@ class RunDiscoveryTests(unittest.TestCase):
         target.parent.mkdir(parents=True);original.rename(target)
         result=discover(self.root,self.store.root)
         self.assertEqual([r['run_root'] for r in result['runs']],[str(target)])
+    def test_flat_episode_traces_inside_a_manifest_container_are_discovered(self):
+        container=self.root/'experiments'/'new-model';container.mkdir(parents=True)
+        atomic_json(container/'run_manifest.json',{'run_id':'container'})
+        source=container/'jobs'/'job-a'/'attempt-01'/'trace'
+        trace=source/'episodes'/'one'/'trace.jsonl';trace.parent.mkdir(parents=True);trace.write_text('{}\n')
+        atomic_json(source/'run_manifest.json',{'run_id':'attempt-01','model':'PortableModel','dataset':'CustomSet','expected_tasks':1})
+        result=discover(self.root,self.store.root)
+        self.assertEqual([r['run_root'] for r in result['runs']],[str(source)])
+        self.assertEqual(result['runs'][0]['trace_layout'],'episodes')
+    def test_sdk_evaluations_are_ordered_by_start_time_within_same_day(self):
+        old=meta();old.update(run_id='old',started_at='2026-10-29T01:00:00+00:00')
+        new=meta(2);new.update(run_id='latest',started_at='2026-10-29T09:00:00+00:00')
+        self.store.create(old);self.store.create(new)
+        result=discover(self.root,self.store.root)
+        self.assertEqual(result['runs'][0]['run_id'],'latest')
+        self.assertIn('17:00',result['runs'][0]['date'])
     def test_sdk_runs_without_manifests_are_separated_by_model(self):
         first=meta();first['run_id']='shared-display-name'
         second=meta(2);second.update(run_id='shared-display-name',model='second-model')

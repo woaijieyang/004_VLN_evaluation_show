@@ -46,6 +46,23 @@ class SyncTests(unittest.TestCase):
         with trace.open('a') as f:f.write(terminal[10:]+'\n')
         worker.next_scan=0;self.drain(worker)
         self.assertEqual(self.store.get(eid)['status'],'pending_encode')
+    def test_flat_episode_layout_rebases_episode_local_observations_without_rewriting_source(self):
+        from PIL import Image
+        trace,manager,worker=self.source(False)
+        target=worker.importer.root/'episodes'/'one'/'trace.jsonl';target.parent.mkdir(parents=True)
+        (target.parent/'images').mkdir();Image.new('RGB',(16,16),'red').save(target.parent/'images/reset.png')
+        events=[json.loads(line) for line in trace.read_text().splitlines()]
+        events[1]['images']=[{'path':'images/reset.png'}]
+        events.append({'kind':'terminal','steps':1,'native_metrics':{'success':True},'termination_reason':'stop'})
+        target.write_text(''.join(json.dumps(e)+'\n' for e in events))
+        trace.unlink();before=hashlib.sha256(target.read_bytes()).hexdigest()
+        self.assertIn(target,worker.importer.discover())
+        manager.request(True);self.drain(worker)
+        row=self.store.list()[0];step=self.store.steps(row['id'])[0]
+        self.assertTrue(step['rgb_available'])
+        self.assertTrue(step['rgb_source']['path'].replace('\\','/').startswith('episodes/one/'))
+        self.assertEqual(row['status'],'pending_encode')
+        self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(),before)
     def test_live_append_updates_without_waiting_for_full_discovery(self):
         trace,manager,worker=self.source(False);self.drain(worker)
         eid=self.store.list()[0]['id'];worker.next_scan=float('inf');worker.next_live_poll=0

@@ -334,14 +334,17 @@ $('save-form').onsubmit=async event=>{
 let availableRuns=[],runDialogBusy=false,runCatalogPending=false;
 function renderRuns(){
  const query=$('run-search').value.trim().toLowerCase(),list=$('run-list');list.replaceChildren();
- const matches=availableRuns.filter(r=>[r.date,r.model,r.model_sha,r.dataset,r.run_id].join(' ').toLowerCase().includes(query));
+ const matches=availableRuns.filter(r=>[r.date,r.model,r.model_sha,r.dataset,r.run_id,r.display_name,r.run_root,r.stage].join(' ').toLowerCase().includes(query));
  for(const run of matches){
   const card=document.createElement('article');card.className='run-card';
   const title=document.createElement('h3');title.textContent=run.date+' · '+run.model;
-  const identity=document.createElement('p');identity.textContent=run.dataset.toUpperCase()+' · '+run.stage+' · 权重 '+(run.model_sha||'未记录')+' · '+run.run_id;
+  const identity=document.createElement('p');identity.textContent=run.dataset.toUpperCase()+' · '+run.stage+' · 权重 '+(run.model_sha||'未记录')+' · '+(run.display_name||run.run_id);
   const source=document.createElement('p');source.textContent='来源：'+run.run_root;source.className='run-source';
   const details=document.createElement('div');details.className='run-card-details';
-  for(const textValue of [`完成 ${run.completed} / ${run.expected??'?'} 条`,run.status,run.retained?'有保留样本':run.expires_at?'缓存至 '+new Date(run.expires_at*1000).toLocaleString():'尚未进入到期计时']){const badge=document.createElement('span');badge.textContent=textValue;details.append(badge);}
+  for(const textValue of [`${run.task_group?(run.completion_source==="task_progress"?"任务侧报告完成":"已记录结束"):"完成"} ${run.completed} / ${run.expected??'?'} 条`,run.status,run.retained?'有保留样本':run.expires_at?'缓存至 '+new Date(run.expires_at*1000).toLocaleString():'尚未进入到期计时']){const badge=document.createElement('span');badge.textContent=textValue;details.append(badge);}
+  if(run.task_group){
+   const note=document.createElement('p');note.textContent=`整项测评任务 · ${run.members.length} 个内部数据源 · 源端已有 ${run.available_completed_records} 条结束记录`+(run.completion_source==='task_progress'?'；上方完成数来自任务侧进度':'');details.append(note);
+  }
   const button=document.createElement('button');button.className='primary';button.textContent=state.evaluationId===run.id?'查看当前测评':'选择并查看';
   button.onclick=async()=>{
    button.disabled=true;text('run-error','');
@@ -353,10 +356,10 @@ function renderRuns(){
  }
  if(!matches.length){const empty=document.createElement('p');empty.textContent=runCatalogPending?'正在扫描测评，列表会自动更新…':'没有符合条件且尚未过期的测评。请检查本目录是否已有受支持的测评记录，或点击刷新。';list.append(empty);}
 }
-async function openRunDialog(){
+async function openRunDialog(force=false){
  if(!$('run-dialog').open)$('run-dialog').showModal();if(runDialogBusy)return;runDialogBusy=true;text('run-error','');text('run-summary','正在读取当前根目录内的测评记录…');
  try{
-  const [data,health]=await Promise.all([api('/api/runs'),api('/api/health')]);availableRuns=data.runs;runCatalogPending=!!data.pending;
+  const [data,health]=await Promise.all([api(force?'/api/runs?refresh=1':'/api/runs'),api('/api/health')]);availableRuns=data.runs;runCatalogPending=!!data.pending;
   text('run-root','作用范围：'+health.project_root+'（仅本机、本目录及其子目录）');
   text('run-summary',data.pending?'正在扫描本目录测评，已有结果会先展示…':`可选 ${availableRuns.length} 个测评 · 已剔除 ${data.expired_runs} 个过期测评 · 缓存 ${Math.round(data.ttl_seconds/60)} 分钟`);renderRuns();
   if(data.pending)setTimeout(()=>{if($('run-dialog').open)openRunDialog();},1200);
@@ -388,7 +391,7 @@ async function initializeEvaluation(){
   if(health.evaluation_id){
    const run=health.evaluation;state.evaluationId=health.evaluation_id;
    selectedRun=health.run_id;selectedModel=run.catalog_only?run.source_model||run.model:null;
-   text('active-run',`${run.date||''} · ${run.model} · ${run.dataset||''} · ${run.run_id}`);
+   text('active-run',`${run.date||''} · ${run.model} · ${run.dataset||''} · ${run.display_name||run.run_id}`);
    $('active-run').title=run.run_root;
    state.awaitingRun=true;await refresh();await refreshSyncStatus();
    if(new URLSearchParams(location.search).get('choose')==='1')openRunDialog();
@@ -409,7 +412,7 @@ async function initializeEvaluation(){
   await openRunDialog();
  }catch(error){text('connection',error.message);text('active-run','无法确认当前测评身份，请重试选择');await openRunDialog();}
 }
-$('choose-run').onclick=openRunDialog;$('refresh-runs').onclick=openRunDialog;$('run-search').oninput=renderRuns;
+$('choose-run').onclick=()=>openRunDialog();$('refresh-runs').onclick=()=>openRunDialog(true);$('run-search').oninput=renderRuns;
 $('close-runs').onclick=()=>$('run-dialog').close();
 initializeEvaluation();
 setInterval(()=>{if($('run-dialog').open&&!runDialogBusy)openRunDialog();},5000);

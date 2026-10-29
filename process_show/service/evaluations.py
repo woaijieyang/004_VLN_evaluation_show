@@ -8,6 +8,7 @@ def source_key(value):
 
 
 def belongs(meta, chosen):
+    if chosen.get('task_group'):return any(belongs(meta,member) for member in chosen['members'])
     if meta['run_id'] != chosen['run_id'] or meta['model'] != chosen.get('source_model', chosen['model']):
         return False
     source = chosen.get('source_run') if chosen.get('catalog_only') else chosen['run_root']

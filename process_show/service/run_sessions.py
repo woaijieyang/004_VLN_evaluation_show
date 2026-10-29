@@ -19,6 +19,9 @@ class RunSessions:
         with self.lock:
             entry=self.sessions.get(chosen['id'])
             if entry:
+                prior={m['id'] for m in entry['chosen'].get('members',[])}
+                for member in chosen.get('members',[]):
+                    if member['id'] not in prior:self.sync.ensure_run(member)
                 entry['server'].bound_run=chosen
                 entry['chosen']=chosen
                 atomic_json(self.store.root/'selected-run.json',chosen)
@@ -52,6 +55,17 @@ class RunSessions:
             if persist:self.prior.pop(identity,None);atomic_json(self.path,self.prior)
         if entry:entry['server'].shutdown();entry['server'].server_close()
 
+    def update_binding(self,chosen):
+        with self.lock:
+            entry=self.sessions.get(chosen['id'])
+            if not entry:return
+            previous={m['id'] for m in entry['chosen'].get('members',[])}
+            added=[m for m in chosen.get('members',[]) if m['id'] not in previous]
+            for member in added:self.sync.ensure_run(member)
+            entry['server'].bound_run=chosen;entry['chosen']=chosen
+            if added:
+                self.prior[chosen['id']]['chosen']=chosen;atomic_json(self.path,self.prior)
+
     def close_all(self):
         for identity in list(self.sessions):self.close(identity,persist=False)
 
@@ -59,6 +73,12 @@ class RunSessions:
         for value in list(self.prior.values())[:16]:
             chosen=value.get('chosen')
             if not chosen:continue
+            if not chosen.get('task_group'):
+                from process_show.service.task_groups import boundary
+                from process_show.storage.scope import Scope
+                try:parent,_=boundary(Scope.current().project,chosen['run_root'])
+                except (ValueError,OSError):continue
+                if parent is not None and str(parent)!=chosen['run_root']:continue
             if chosen.get('expires_at') and chosen['expires_at']<=time.time() and not chosen.get('retained'):continue
             try:self.open(chosen)
             except (ValueError,OSError):continue
@@ -68,5 +88,7 @@ class RunSessions:
             value=self.catalog.get()
             if not value.get('scanned_at') or value.get('errors'):continue
             allowed={r['id'] for r in value.get('runs',[])}
+            for chosen in value.get('runs',[]):
+                if chosen['id'] in self.sessions and chosen.get('task_group'):self.update_binding(chosen)
             with self.lock:expired=[identity for identity in self.sessions if identity not in allowed]
             for identity in expired:self.close(identity)

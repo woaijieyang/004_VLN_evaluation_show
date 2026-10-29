@@ -49,6 +49,7 @@ class Importer:
         self.started_at = started_at or self.manifest.get("created_at")
         self.lazy=lazy
         self.evaluation=None
+        self.run_id=self.manifest.get('run_id',self.root.name)
 
     def _step(self,eid,step,rgb_ref=None):
         if self.lazy:
@@ -66,8 +67,8 @@ class Importer:
             self.engine.step(eid,step,open_asset(self.root,rgb_ref["path"]) if rgb_ref else None)
 
     def discover(self):
-        pattern = "shards/shard-*/attempt-*/episodes/*/trace.jsonl" if self.adapter == "case1" else "*.jsonl"
-        paths=sorted(p for p in self.root.glob(pattern) if not p.is_symlink())
+        patterns = ("shards/shard-*/attempt-*/episodes/*/trace.jsonl","episodes/*/trace.jsonl") if self.adapter == "case1" else ("*.jsonl",)
+        paths=sorted({p for pattern in patterns for p in self.root.glob(pattern) if not p.is_symlink()})
         if self.adapter!='case1' and self.evaluation:
             paths=[p for p in paths if (lambda m:m and m['run_id']==self.evaluation['run_id'] and m['model']==self.evaluation['model'])(generic_metadata(p))]
         return paths
@@ -131,7 +132,7 @@ class Importer:
         # Bind attempt and shard so retries never collide.
         rel = path.relative_to(self.root)
         attempt = "/".join(rel.parts[:3])
-        meta = {"schema_version":1,"run_id":self.root.name,"attempt":attempt,"model":self.model,"stage":self.stage,"dataset":key[0].upper(),"split":key[1],"language":key[2],"scene_id":Path(key[3]).stem,"episode_id":reset["episode_id"],"instruction_id":reset.get("instruction_id"),"instruction":instruction,"instruction_source":source,"started_at":self.started_at or datetime.fromtimestamp(path.stat().st_mtime,timezone.utc).isoformat(),"source_trace":str(rel),"source_run":str(self.root),"source_kind":"case1_trace"}
+        meta = {"schema_version":1,"run_id":self.run_id,"attempt":attempt,"model":self.model,"stage":self.stage,"dataset":key[0].upper(),"split":key[1],"language":key[2],"scene_id":Path(key[3]).stem,"episode_id":reset["episode_id"],"instruction_id":reset.get("instruction_id"),"instruction":instruction,"instruction_source":source,"started_at":self.started_at or datetime.fromtimestamp(path.stat().st_mtime,timezone.utc).isoformat(),"source_trace":str(rel),"source_run":str(self.root),"source_kind":"case1_trace"}
         meta["timestamp_source"]="run_manifest_or_explicit" if self.started_at else "trace_mtime_fallback"
         meta["provenance"]={k:self.manifest[k] for k in ("model_sha256","source_sha256","config_sha256","benchmark_sha256","navmesh_sha256") if k in self.manifest}
         state["eid"] = self.engine.start(meta)
@@ -158,7 +159,14 @@ class Importer:
                     # This call OBSERVES state n; it did not execute action n.
                     s["observation_call_id"]=event["call_id"]
                     s["model_frame"]=event.get("frame")
-                    refs = event.get("images",[])
+                    refs = []
+                    for original in event.get('images',[]):
+                        ref=dict(original)
+                        image=confined(self.root,self.root/ref['path'])
+                        if not image.is_file():
+                            local=confined(self.root,path.parent/ref['path'])
+                            if local.is_file():ref=dict(ref,path=str(local.relative_to(self.root)),original_path=original['path'])
+                        refs.append(ref)
                     s["rgb_source"] = refs[-1] if refs else None
                     self._step(state["eid"],s,refs[-1] if refs else None)
         elif kind == "primitive_action":

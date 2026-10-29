@@ -1,5 +1,13 @@
 # process-show v1 interface
 
+## Logical evaluation tasks (2026-10-29)
+
+The selectable/port-owning entity is the complete evaluation task. A task declared by `process-show-task.json` (`id`, optional `name`/`expected`) groups descendant sources; an existing scope-manifest plus job-registry controller is recognized automatically. `task_group=true` rows include internal `members`, `task_root`, `available_completed_records`, `completion_source`, and the task progress timestamp. Members are not separate user task cards or user ports.
+
+RunSessions opens source watchers for members, keeps one task listener, and adds new members without changing the task port. Episode metadata retains its original source identity; response `evaluation_id` identifies the logical task. Per-task sync/refresh/SSE includes its sources, while another task's episode remains inaccessible. Task-side completion and observed replay records are separate counters; completing a shard never completes the whole task.
+
+Primitive traces can use either the sharded layout or `episodes/*/trace.jsonl`. Relative RGB references may resolve within their own episode directory, under the same confined input root. Existing IDs and import cursors are preserved. New candidates can be selected while a full historical scan is still pending.
+
 ## Single-entry evaluation addresses (2026-10-29)
 
 Selection also returns `fallback_url=/evaluations/<id>/?evaluation=<id>`. Native per-evaluation ports remain independent. When the browser cannot reach that port (for example, only the control port has been forwarded), it verifies the same-origin fallback health identity and navigates there. All API, image, map, video and SSE URLs retain this prefix.

@@ -131,6 +131,9 @@ class SyncManager:
         self.sources.append(source);return source
     def evaluation_sources(self,chosen=None):
         if chosen is None:return self.sources
+        if chosen.get('task_group'):
+            selected=[s for m in chosen['members'] for s in self.evaluation_sources(m)]
+            return list({id(s):s for s in selected}.values())
         from process_show.service.evaluations import source_key
         return [s for s in self.sources if source_key(s.root)==source_key(chosen['run_root'])
                 and (chosen.get('adapter')!='generic' or (getattr(getattr(s,'importer',None),'evaluation',None) or {}).get('id')==chosen['id'])]
@@ -156,7 +159,7 @@ class SyncManager:
         return {'sources':[s.snapshot() for s in sources],'expired_episodes':expired,'configured_sources':len(sources),
                 'scope':'selected evaluation only' if chosen else 'configured project run roots only',
                 'evaluation_id':chosen['id'] if chosen else None,
-                'capture_mode':'indexed_producer' if chosen and chosen.get('catalog_only') else 'trace_watcher',
+                'capture_mode':'indexed_producer' if chosen and (chosen.get('catalog_only') or chosen.get('task_group') and all(m.get('catalog_only') for m in chosen['members'])) else 'trace_watcher',
                 'last_index_update':last,'record_age_seconds':max(0,time.time()-last) if last else None,
                 'live_records':sum(r['status']=='live' for r in active),
                 'capture_errors':[r['error'] for r in active if r['error']][:10]}
@@ -165,6 +168,8 @@ class SyncManager:
         from process_show.capture.adapters import Importer
         from process_show.storage.core import atomic_json
         if self.service_stop is None:raise ValueError('此服务未启用运行选择，请从本目录入口启动')
+        if chosen.get('task_group'):
+            self.ensure_run(chosen);atomic_json(self.store.root/'selected-run.json',chosen);return chosen
         with self.selection_lock:
             if len(self.sources)==1 and self.sources[0].root==chosen['run_root']:
                 self.sources[0].request(True)
@@ -182,6 +187,9 @@ class SyncManager:
 
     def ensure_run(self,chosen):
         from process_show.capture.adapters import Importer
+        if chosen.get('task_group'):
+            for member in chosen['members']:self.ensure_run(member)
+            return
         if self.service_stop is None:raise ValueError('此服务未启用运行选择')
         with self.selection_lock:
             if chosen.get('catalog_only'):return
@@ -193,6 +201,8 @@ class SyncManager:
                     if not bound:return  # An explicitly configured directory watcher already owns these cursors.
                 source.request(True);return
             importer=Importer(self.store,chosen['run_root'],chosen['stage'],chosen.get('source_model',chosen['model']),adapter=chosen.get('adapter','case1'),lazy=True)
+            importer.run_id=chosen['run_id']
             if chosen.get('adapter')=='generic':importer.evaluation=chosen
             source=self.add(importer,True);source.request(True);source.done.clear()
+            source.state['source']=chosen.get('display_name',importer.root.name)
             threading.Thread(target=source.run,args=(self.service_stop,),daemon=True).start()
