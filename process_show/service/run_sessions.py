@@ -15,13 +15,14 @@ class RunSessions:
         from process_show.service.server import make_server
         from process_show.storage.scope import Scope
         scope=Scope.current();scope.source(chosen['run_root'])
+        fallback='/evaluations/'+quote(chosen['id'],safe='')+'/?evaluation='+quote(chosen['id'],safe='')
         with self.lock:
             entry=self.sessions.get(chosen['id'])
             if entry:
                 entry['server'].bound_run=chosen
                 entry['chosen']=chosen
                 atomic_json(self.store.root/'selected-run.json',chosen)
-                return {'selected':chosen,'url':entry['url'],'port':entry['port'],'probe_token':entry['server'].probe_token}
+                return {'selected':chosen,'url':entry['url'],'fallback_url':fallback,'port':entry['port'],'probe_token':entry['server'].probe_token}
             if len(self.sessions)>=16:raise ValueError('本目录已打开16个测评服务，请先停止不用的测评')
             self.sync.ensure_run(chosen)
             preferred=self.prior.get(chosen['id'],{}).get('port')
@@ -43,7 +44,7 @@ class RunSessions:
             atomic_json(self.path,self.prior)
             threading.Thread(target=server.serve_forever,daemon=True).start()
             atomic_json(self.store.root/'selected-run.json',chosen)
-            return {'selected':chosen,'url':url,'port':server.server_port,'probe_token':server.probe_token}
+            return {'selected':chosen,'url':url,'fallback_url':fallback,'port':server.server_port,'probe_token':server.probe_token}
 
     def close(self,identity,persist=True):
         with self.lock:

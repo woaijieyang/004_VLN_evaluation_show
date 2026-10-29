@@ -232,7 +232,7 @@ class Store:
 
     def list(self):
         with self.db() as db:
-            records=db.execute("SELECT e.*,COALESCE((SELECT MAX(s.step) FROM steps s WHERE s.episode=e.id),0) AS max_step FROM episodes e WHERE deleted IS NULL ORDER BY created DESC").fetchall()
+            records=db.execute("SELECT e.*,COALESCE((SELECT MAX(s.step) FROM steps s WHERE s.episode=e.id),0) AS max_step,(SELECT COUNT(*) FROM steps s WHERE s.episode=e.id) AS recorded_steps FROM episodes e WHERE deleted IS NULL ORDER BY created DESC").fetchall()
         rows = []
         for record in records:
             item=dict(record)

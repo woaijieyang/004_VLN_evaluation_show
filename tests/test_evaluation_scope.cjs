@@ -9,4 +9,13 @@ assert.equal(scope.resolve({evaluation_id:'batch-a',evaluation:runs[0]},runs,new
 assert.equal(scope.accepts({evaluation_id:'batch-b'},'batch-a'),false);
 assert.equal(scope.accepts({evaluation_id:'batch-a'},'batch-a'),true);
 assert.equal(scope.accepts({run_id:'same'},null),false);
-console.log('Evaluation isolation: 8 assertions passed');
+assert.equal(scope.scoped('/evaluations/batch-a/','/api/episodes'),'/evaluations/batch-a/api/episodes');
+assert.equal(scope.scoped('/evaluations/batch-a/','/api/maps/a.webp'),'/evaluations/batch-a/api/maps/a.webp');
+assert.equal(scope.scoped('/evaluations/batch-b/','/api/events'),'/evaluations/batch-b/api/events');
+assert.equal(scope.scoped('/','/api/episodes'),'/api/episodes');
+assert.equal(scope.scoped('/evaluations/batch-a/','https://other.invalid/file'),'https://other.invalid/file');
+const empty={id:'empty',recorded_steps:0,error:'Capture incomplete'},ready={id:'ready',recorded_steps:10,error:''};
+assert.equal(scope.initialEpisode([empty,ready]).id,'ready');
+assert.equal(scope.initialEpisode([empty]).id,'empty');
+assert.equal(scope.status({status:'live',error:'consumer exited'},{live:'采集中记录'}),'采集异常，运行状态未知');
+console.log('Evaluation isolation and routing: 16 assertions passed');

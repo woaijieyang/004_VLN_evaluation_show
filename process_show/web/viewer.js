@@ -1,5 +1,6 @@
 'use strict';
 const $=id=>document.getElementById(id);
+const scopedUrl=path=>EvaluationScope.scoped(location.pathname,path);
 let selectedRun=new URLSearchParams(location.search).get('run');
 let selectedModel=new URLSearchParams(location.search).get('model');
 const state={evaluationId:null,listLimit:150,episodes:[],episode:null,steps:[],step:0,follow:false,playing:false,speed:1,map:null,mapImage:null,mapKey:'',mapZoom:1,pan:[0,0],fullMap:false,viewSpan:null,requestedStep:0,anchors:null,mapHits:[]};
@@ -10,6 +11,7 @@ let activeAction=null;
 const statusLabels={live:'采集中记录',ready:'视频就绪',pending_encode:'等待视频编码',encoding:'视频编码中',encode_error:'编码失败'};
 const text=(id,value)=>{$(id).textContent=value??'—';};
 async function api(path,body,signal){
+ path=scopedUrl(path);
  const controller=new AbortController();let timedOut=false;
  const abort=()=>controller.abort();if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});
  const timer=setTimeout(()=>{timedOut=true;controller.abort();},path.includes('/map?')?45000:20000);
@@ -18,17 +20,17 @@ async function api(path,body,signal){
  finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
 }
 function filtered(){const query=$('search').value.trim().toLowerCase(),filter=$('state').value;return state.episodes.filter(e=>{const m=e.meta;return EvaluationScope.accepts(e,state.evaluationId)&&(!query||[m.episode_id,m.scene_id,m.model].some(x=>String(x).toLowerCase().includes(query)))&&(!$('dataset').value||m.dataset===$('dataset').value)&&(!$('date').value||m.date===$('date').value)&&(!$('stage').value||m.stage.includes($('stage').value))&&(!filter||(filter==='kept'?(e.pinned||e.selected):['success','failure'].includes(filter)?e.outcome===filter:e.status===filter));});}
-function renderList(){const box=$('episodes'),scroll=box.scrollTop,matches=filtered(),items=matches.slice(0,state.listLimit),visible=new Set(items.map(x=>x.id));text('count',state.episodes.length);text('list-summary',`显示 ${items.length} / 匹配 ${matches.length} 条 · 索引共 ${state.episodes.length} 条`);$('load-more').hidden=items.length>=matches.length;for(const e of items){let node=cards.get(e.id);if(!node){node=document.createElement('button');node.className='episode';node.dataset.episode=e.id;node.innerHTML='<div class="episode-top"><span></span><span></span></div><div class="episode-title"></div><div class="episode-scene"></div><div class="episode-status"></div>';node.onclick=()=>choose(e.id);cards.set(e.id,node);}node.classList.toggle('selected',state.episode?.id===e.id);const [dataset,kept]=node.querySelectorAll('.episode-top span');dataset.textContent=e.meta.dataset;kept.textContent=e.pinned?'★ 固定':e.selected?'保留':'';node.querySelector('.episode-title').textContent='Episode '+e.meta.episode_id;node.querySelector('.episode-scene').textContent=e.meta.scene_id;const label=node.querySelector('.episode-status');label.textContent=`${e.catching_up?e.max_step+'/'+(e.meta.source_total_steps??'?'):e.max_step} 步 · ${e.catching_up?'同步历史':e.outcome==='success'?'成功':e.outcome==='failure'?'失败':statusLabels[e.status]||e.status}`;label.className='episode-status '+(e.outcome||'');box.append(node);}for(const node of [...box.children]){if(!visible.has(node.dataset.episode))node.remove();}box.scrollTop=scroll;}
-async function refresh(){if(state.serviceStopped||!state.evaluationId)return;if(refreshBusy){refreshAgain=true;return;}refreshBusy=true;try{state.episodes=await api('/api/episodes');const value=$('dataset').value,options=[...new Set(state.episodes.map(e=>e.meta.dataset))];if([...$('dataset').options].slice(1).map(o=>o.value).join('|')!==options.join('|')){$('dataset').replaceChildren(new Option('全部数据集',''),...options.map(x=>new Option(x,x)));$('dataset').value=value;}renderList();syncKeepDatasets();if(state.awaitingRun&&!state.episode&&filtered().length){state.awaitingRun=false;await choose(filtered()[0].id);}if(state.episode){const summary=state.episodes.find(e=>e.id===state.episode.id);if(!summary){stop();state.episode=null;$('viewer').hidden=true;$('empty').hidden=false;}else if(summary.updated!==state.episode.updated||summary.status!==state.episode.status){await loadReplay(false);}else{state.episode.pinned=summary.pinned;state.episode.selected=summary.selected;header();}}}catch(error){text('connection',error.message);}finally{refreshBusy=false;if(refreshAgain){refreshAgain=false;refresh();}}}
+function renderList(){const box=$('episodes'),scroll=box.scrollTop,matches=filtered(),items=matches.slice(0,state.listLimit),visible=new Set(items.map(x=>x.id));text('count',state.episodes.length);text('list-summary',`显示 ${items.length} / 匹配 ${matches.length} 条 · 索引共 ${state.episodes.length} 条`);$('load-more').hidden=items.length>=matches.length;for(const e of items){let node=cards.get(e.id);if(!node){node=document.createElement('button');node.className='episode';node.dataset.episode=e.id;node.innerHTML='<div class="episode-top"><span></span><span></span></div><div class="episode-title"></div><div class="episode-scene"></div><div class="episode-status"></div>';node.onclick=()=>choose(e.id);cards.set(e.id,node);}node.classList.toggle('selected',state.episode?.id===e.id);const [dataset,kept]=node.querySelectorAll('.episode-top span');dataset.textContent=e.meta.dataset;kept.textContent=e.pinned?'★ 固定':e.selected?'保留':'';node.querySelector('.episode-title').textContent='Episode '+e.meta.episode_id;node.querySelector('.episode-scene').textContent=e.meta.scene_id;const label=node.querySelector('.episode-status');label.textContent=`${e.catching_up?e.max_step+'/'+(e.meta.source_total_steps??'?'):e.max_step} 步 · ${e.catching_up?'同步历史':e.outcome==='success'?'成功':e.outcome==='failure'?'失败':EvaluationScope.status(e,statusLabels)}`;label.className='episode-status '+(e.outcome||'');box.append(node);}for(const node of [...box.children]){if(!visible.has(node.dataset.episode))node.remove();}box.scrollTop=scroll;}
+async function refresh(){if(state.serviceStopped||!state.evaluationId)return;if(refreshBusy){refreshAgain=true;return;}refreshBusy=true;try{state.episodes=await api('/api/episodes');const value=$('dataset').value,options=[...new Set(state.episodes.map(e=>e.meta.dataset))];if([...$('dataset').options].slice(1).map(o=>o.value).join('|')!==options.join('|')){$('dataset').replaceChildren(new Option('全部数据集',''),...options.map(x=>new Option(x,x)));$('dataset').value=value;}renderList();syncKeepDatasets();if(state.awaitingRun&&!state.episode&&filtered().length){state.awaitingRun=false;await choose(EvaluationScope.initialEpisode(filtered()).id);}if(state.episode){const summary=state.episodes.find(e=>e.id===state.episode.id);if(!summary){stop();state.episode=null;$('viewer').hidden=true;$('empty').hidden=false;}else if(summary.updated!==state.episode.updated||summary.status!==state.episode.status){await loadReplay(false);}else{state.episode.pinned=summary.pinned;state.episode.selected=summary.selected;header();}}}catch(error){text('connection',error.message);}finally{refreshBusy=false;if(refreshAgain){refreshAgain=false;refresh();}}}
 async function choose(id){stop();selectionVersion++;imageVersion++;replayController?.abort();replayBusy=false;state.episode={...state.episodes.find(e=>e.id===id)};state.steps=[];text('raw','正在加载当前任务…');actionNodes.clear();activeAction=null;$('action-sequence').replaceChildren();state.step=0;state.requestedStep=0;state.anchors=null;state.follow=state.episode.status==='live'&&!state.episode.catching_up;state.map=null;state.mapImage=null;state.mapKey='';state.mapZoom=1;state.pan=[0,0];state.fullMap=false;state.viewSpan=null;text('fit-map','全局路线');loadedObservation=null;$('rgb').hidden=true;$('rgb-empty').hidden=false;$('rgb-empty').textContent='正在加载已记录观测';$('viewer').hidden=false;$('empty').hidden=true;renderList();await loadReplay(true);}
 async function loadReplay(full=false){if(!state.episode||replayBusy)return;replayBusy=true;const id=state.episode.id,version=selectionVersion;replayController=new AbortController();const after=full||!state.steps.length?'':`?after=${Math.max(0,state.steps.length-2)}`;try{const payload=await api(`/api/episodes/${id}/replay${after}`,undefined,replayController.signal);if(version!==selectionVersion)return;state.episode=payload.episode;state.anchors=payload.anchors;if(full)state.steps=[];for(const s of payload.steps)state.steps[s.step]=s;if(full)state.steps.length=payload.last_step+1;state.lastStep=payload.last_step;if(state.follow)state.requestedStep=payload.last_step;$('timeline').max=payload.last_step;$('step-number').max=payload.last_step;header();renderActionSequence();schedulePaint();requestMap();prefetch();}catch(error){if(error.name!=='AbortError')text('error',error.message);}finally{if(version===selectionVersion)replayBusy=false;}}
 function header(){
  const e=state.episode;if(!e)return;const m=e.meta;
  text('eyebrow',`${m.dataset} / ${m.split} / ${m.stage}`);text('title',`Episode ${m.episode_id}`);
  text('identity',`${m.scene_id}   ·   ${m.model}   ·   ${m.date}`);
- text('status',e.catching_up?'正在同步历史':statusLabels[e.status]||e.status);
+ text('status',e.catching_up?'正在同步历史':EvaluationScope.status(e,statusLabels));
  text('instruction',m.instruction||'未记录导航指令');$('expand').hidden=(m.instruction||'').length<150;
- text('pin',e.pinned?'★ 已固定':'☆ 保留');$('download').href=`/api/episodes/${e.id}/video?download=1`;
+ text('pin',e.pinned?'★ 已固定':'☆ 保留');$('download').href=scopedUrl(`/api/episodes/${e.id}/video?download=1`);
  $('download').classList.toggle('disabled',e.status!=='ready');
  text('retention-note',e.pinned?'已保留到运行目录，不自动清除':e.selected?'当前已入选保留样本':`视频生成后缓存 ${cacheLabel()}，未保留项到期清除`);text('error',e.error||'');
  if(e.status==='ready'&&(m.video_version||1)<4){
@@ -50,7 +52,7 @@ function schedulePaint(){if(!paintHandle)paintHandle=requestAnimationFrame(paint
 function paint(){paintHandle=0;if(!state.episode)return;const start=performance.now();if(!showObservation()){drawTimeline();return;}const s=stepRecord();updateAction(s);text('step-label',state.step);text('total-label',`/ ${state.lastStep||0} ${state.episode.catching_up?'已载入':'步'}`);text('action',s.action);$('timeline').value=state.step;$('step-number').value=state.step;$('follow').classList.toggle('active',state.follow);text('end-label',state.episode.catching_up?`历史同步 ${state.lastStep||0} / ${state.episode.meta.source_total_steps??'?'} 步`:(state.episode.status==='live'?'已接收 ':'共 ')+(state.lastStep||0)+' 步');text('step-info',`动作 ${s.action||'—'} · 模型调用 ${s.call_id??'—'} · 碰撞 ${s.collided===true?'是':s.collided===false?'否':'未知'}`);const p=s.pose?.position;text('coordinates',p?`x ${p[0].toFixed(2)}  y ${p[1].toFixed(2)}  z ${p[2].toFixed(2)} m`:'位姿未记录');requestMap();drawMap();drawTimeline();const perf=$('performance');perf.dataset.paints=Number(perf.dataset.paints)+1;perf.dataset.lastPaintMs=(performance.now()-start).toFixed(2);perf.dataset.step=state.step;}
 function observationNumber(){const s=state.steps[state.requestedStep]||{};return $('strict').checked?(s.rgb_available?s.step:null):s.observation_step;}
 function cachedImage(number){return imageCache.get(state.episode.id+':'+number);}
-function loadImage(number){const eid=state.episode.id,key=eid+':'+number;let entry=imageCache.get(key);if(entry)return entry;const im=new Image();entry={image:im,ready:false,promise:null};entry.promise=new Promise((resolve,reject)=>{const timer=setTimeout(()=>{imageCache.delete(key);reject(Error('图片加载超时，请刷新重试'));},20000);im.onload=()=>{clearTimeout(timer);im.decode().catch(()=>{}).then(()=>{entry.ready=true;resolve(im);});};im.onerror=()=>{clearTimeout(timer);imageCache.delete(key);reject(Error('观测图像读取失败'));};});im.decoding='async';im.src=`/api/episodes/${eid}/observation?step=${number}&strict=1`;imageCache.set(key,entry);$('performance').dataset.observationRequests=Number($('performance').dataset.observationRequests)+1;if(imageCache.size>128)imageCache.delete(imageCache.keys().next().value);return entry;}
+function loadImage(number){const eid=state.episode.id,key=eid+':'+number;let entry=imageCache.get(key);if(entry)return entry;const im=new Image();entry={image:im,ready:false,promise:null};entry.promise=new Promise((resolve,reject)=>{const timer=setTimeout(()=>{imageCache.delete(key);reject(Error('图片加载超时，请刷新重试'));},20000);im.onload=()=>{clearTimeout(timer);im.decode().catch(()=>{}).then(()=>{entry.ready=true;resolve(im);});};im.onerror=()=>{clearTimeout(timer);imageCache.delete(key);reject(Error('观测图像读取失败'));};});im.decoding='async';im.src=scopedUrl(`/api/episodes/${eid}/observation?step=${number}&strict=1`);imageCache.set(key,entry);$('performance').dataset.observationRequests=Number($('performance').dataset.observationRequests)+1;if(imageCache.size>128)imageCache.delete(imageCache.keys().next().value);return entry;}
 function applyObservation(entry,number){if(!entry.ready)return;const rgb=$('rgb');if(rgb.src!==entry.image.src)rgb.src=entry.image.src;rgb.hidden=false;$('rgb-empty').hidden=true;$('image-loading').hidden=true;loadedObservation=number;const exact=number===state.step;const message=exact?`第 ${number} 步的真实画面`:`第 ${state.step} 步未保存图片，显示第 ${number} 步画面`;text('observation-badge',message);$('observation-badge').hidden=false;rgb.dataset.sourceStep=number;rgb.dataset.requestedStep=state.step;rgb.dataset.displayStep=state.step;text('observation-label',exact?'当前步原始观测':`第 ${number} 步的历史画面`);text('rgb-note',exact?'该图像在此步骤真实记录':'BEV 为当前步位置；图片来自此前步骤');}
 function showObservation(){
  const number=observationNumber();clearTimeout(imageTimer);
@@ -108,7 +110,7 @@ function requestMap(){
    if(!current())return;if(!info.available){apply(info,null);return;}
    const image=await new Promise((resolve,reject)=>{
      const im=new Image(),timer=setTimeout(()=>reject(Error('地图图片读取超时')),20000);
-     im.onload=()=>{clearTimeout(timer);resolve(im);};im.onerror=()=>{clearTimeout(timer);reject(Error('地图图片读取失败'));};im.src=info.image_url;
+     im.onload=()=>{clearTimeout(timer);resolve(im);};im.onerror=()=>{clearTimeout(timer);reject(Error('地图图片读取失败'));};im.src=scopedUrl(info.image_url);
    });
    if(!current())return;mapCache.set(key,{info,image});if(mapCache.size>24)mapCache.delete(mapCache.keys().next().value);apply(info,image);
  })().catch(error=>{if(current()&&error.name!=='AbortError'){text('map-message',error.message+' · 点击“重试地图”');$('map-message').hidden=false;text('map-note','地图加载失败，轨迹与步骤仍可查看');}});
@@ -158,7 +160,7 @@ for(const id of ['search','dataset','state','date','stage'])$(id).oninput=()=>{s
 $('pin').onclick=async()=>{try{await api(`/api/episodes/${state.episode.id}/pin`,{pinned:!state.episode.pinned});await refresh();}catch(e){text('error',e.message);}};$('copy').onclick=async()=>{try{await navigator.clipboard.writeText(state.episode.meta.instruction);text('copy','已复制');setTimeout(()=>text('copy','复制'),1200);}catch(_){text('error','请选中指令文字复制');}};$('expand').onclick=()=>{$('instruction').classList.toggle('expanded');text('expand',$('instruction').classList.contains('expanded')?'收起':'展开完整指令');};$('raw').parentElement.ontoggle=()=>{if($('raw').parentElement.open)text('raw',JSON.stringify({identity:state.episode?.meta,step:stepRecord(),result:state.episode?.result},null,2));};
 $('settings').onclick=async()=>{try{const data=await api('/api/policy');policy=data.policy;$('policy-count').value=policy.count;setCacheDuration(policy.ttl_seconds);$('dataset-count').value=state.episode?(policy.datasets[state.episode.meta.dataset]??''):'';$('disk-limit').value=policy.max_bytes/1024**3;$('rules').value=JSON.stringify(policy.rules,null,2);text('policy-usage',`当前 ${Math.round(data.usage_bytes/1024**2)} MiB。固定项超过额度仍会保留。`);text('policy-error','');$('policy-dialog').showModal();}catch(e){text('error',e.message);}};$('cancel-policy').onclick=()=>$('policy-dialog').close();$('policy-form').onsubmit=async e=>{e.preventDefault();try{const datasets={...policy.datasets},rules=JSON.parse($('rules').value);if(state.episode){const m=state.episode.meta;if($('dataset-count').value==='')delete datasets[m.dataset];else datasets[m.dataset]=Number($('dataset-count').value);const k=$('rule-kind').value;if(k)rules.push({dataset:m.dataset,[k]:m[k]});}await api('/api/policy',{count:Number($('policy-count').value),datasets,rules,ttl_seconds:cacheDuration(),max_bytes:Math.round(Number($('disk-limit').value)*1024**3)});$('policy-dialog').close();await loadKeepPolicy();await refresh();}catch(e){text('policy-error',e.message);}};
 new ResizeObserver(()=>schedulePaint()).observe($('viewer'));window.addEventListener('resize',schedulePaint);document.addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)||$('policy-dialog').open||!state.episode)return;if(e.key==='ArrowLeft'){e.preventDefault();setStep(state.step-1);}if(e.key==='ArrowRight'){e.preventDefault();setStep(state.step+1);}if(e.code==='Space'){e.preventDefault();$('play').click();}});
-let events=new EventSource('/api/events');function bindEvents(){events.addEventListener('update',()=>{if(!connectionManaged){text('connection','实时连接');$('connection').classList.add('online');}refresh();});events.onerror=()=>{if(!connectionManaged){text('connection','连接中断，正在重连');$('connection').classList.remove('online');}};}bindEvents();refresh();
+let events=new EventSource(scopedUrl('/api/events'));function bindEvents(){events.addEventListener('update',()=>{if(!connectionManaged){text('connection','实时连接');$('connection').classList.add('online');}refresh();});events.onerror=()=>{if(!connectionManaged){text('connection','连接中断，正在重连');$('connection').classList.remove('online');}};}bindEvents();refresh();
 let serviceIdentity=null;
 api('/api/health').then(info=>{serviceIdentity=info;document.querySelector('.app-tag').textContent='导航过程回放 · '+info.project_name;document.querySelector('.app-tag').title=info.project_root;text('stop-service',info.run_id?'停止此测评服务':'停止本目录服务');}).catch(()=>{});
 $('stop-service').onclick=async()=>{
@@ -284,7 +286,7 @@ async function checkTransport(){
   $('connection').classList.toggle('online',connected);
   $('connection').title=connected?'网络断开后会自动恢复连接':'网络恢复后自动继续，无需重新打开插件';
   if(connected&&lastTransportState&&lastTransportState!=='connected'&&!state.serviceStopped){
-    refresh();if(state.episode)loadReplay(true);events.close();events=new EventSource('/api/events');bindEvents();
+    refresh();if(state.episode)loadReplay(true);events.close();events=new EventSource(scopedUrl('/api/events'));bindEvents();
   }
   lastTransportState=info.state;
  }catch(_){if(connectionManaged&&!state.serviceStopped){text('connection','本机连接守护暂不可用');$('connection').classList.remove('online');}}
@@ -314,7 +316,7 @@ $('save-form').onsubmit=async event=>{
  try{
   if(!local){await api(`/api/episodes/${episode.id}/pin`,{pinned:true});await refresh();text('save-feedback','已固定到本项目运行目录，不会因缓存到期自动清除。');return;}
   const filename=(episode.directory?.split(/[\\/]/).pop()||`${episode.meta.dataset}-${episode.meta.scene_id}-ep${episode.meta.episode_id}-${episode.id.slice(0,12)}`)+'.mp4';
-  const url=`/api/episodes/${episode.id}/video?download=1`;
+  const url=scopedUrl(`/api/episodes/${episode.id}/video?download=1`);
   if(typeof window.showSaveFilePicker==='function'){
    const handle=await window.showSaveFilePicker({suggestedName:filename,types:[{description:'MP4 视频',accept:{'video/mp4':['.mp4']}}]});
    const response=await fetch(url);if(!response.ok)throw Error('视频读取失败：'+response.status);
@@ -361,17 +363,24 @@ async function openRunDialog(){
  }catch(error){text('run-error',error.message);}finally{runDialogBusy=false;}
 }
 async function selectEvaluation(run){
-    const result=await api('/api/runs/select',{id:run.id});
-    if(result.probe_token){
-     const probe=new URL('/api/health',result.url);probe.searchParams.set('probe',result.probe_token);
-     let healthy;
-     try{const reply=await fetch(probe,{signal:AbortSignal.timeout(5000),credentials:'omit',cache:'no-store'});if(!reply.ok)throw Error('服务尚未就绪');healthy=await reply.json();}
-     catch(_){throw Error(`测评已在运行主机的 ${result.port} 端口启动，但当前浏览器无法访问。已保留选择页；请在服务所在机器访问，或使用已有的远程访问通道。`);}
-     if(healthy.scope_id!==result.scope_id||healthy.evaluation_id!==run.id)throw Error('端口返回的目录或测评身份不匹配，已阻止跳转。');
-     location.assign(result.url);return;
-    }
-    throw Error('服务版本未提供测评可达性校验，请刷新后重试。');
-
+ const result=await api('/api/runs/select',{id:run.id});
+ if(!result.probe_token)throw Error('服务版本未提供测评身份校验，请刷新后重试。');
+ const candidates=[{url:result.url,direct:true}];
+ if(result.fallback_url?.startsWith('/evaluations/'+encodeURIComponent(run.id)+'/')){
+  candidates.push({url:new URL(result.fallback_url,location.origin).href,direct:false});
+ }
+ for(const target of candidates){
+  try{
+   const base=new URL(target.url),probe=new URL(base.href);
+   probe.pathname=base.pathname.replace(/\/$/,'')+'/api/health';probe.search='';
+   probe.searchParams.set('probe',result.probe_token);
+   const reply=await fetch(probe,{signal:AbortSignal.timeout(target.direct?1500:5000),credentials:'omit',cache:'no-store'});
+   if(!reply.ok)continue;const healthy=await reply.json();
+   if(healthy.scope_id!==result.scope_id||healthy.evaluation_id!==run.id)continue;
+   location.assign(target.url);return;
+  }catch(_){}
+ }
+ throw Error('测评独立端口和当前入口下的独立地址均不可达，请查看连接状态后重试。未打开身份不匹配的页面。');
 }
 async function initializeEvaluation(){
  try{

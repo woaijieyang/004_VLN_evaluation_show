@@ -1,5 +1,5 @@
 """Project-derived port candidates with collision checks; no global registry."""
-import hashlib,socket
+import hashlib,os,socket
 
 def candidates(identity,preferred):
     yield preferred
@@ -13,7 +13,8 @@ def free(port):
         probe.settimeout(.15)
         if probe.connect_ex(('127.0.0.1',port))==0:return False
     with socket.socket() as sock:
-        sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        if os.name=='nt':sock.setsockopt(socket.SOL_SOCKET,socket.SO_EXCLUSIVEADDRUSE,1)
+        else:sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
         try:sock.bind(('127.0.0.1',port));return True
         except OSError:return False
 

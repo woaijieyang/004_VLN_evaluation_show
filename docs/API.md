@@ -1,5 +1,13 @@
 # process-show v1 interface
 
+## Single-entry evaluation addresses (2026-10-29)
+
+Selection also returns `fallback_url=/evaluations/<id>/?evaluation=<id>`. Native per-evaluation ports remain independent. When the browser cannot reach that port (for example, only the control port has been forwarded), it verifies the same-origin fallback health identity and navigates there. All API, image, map, video and SSE URLs retain this prefix.
+
+The entry resolves only an active listener in its own RunSessions registry; it never accepts an arbitrary forwarding target. Direct `/api/*` requests keep the original port's evaluation binding. An explicit `/evaluations/<id>/api/*` address is bound to the ID in that address, including when selecting a different evaluation from an existing page. Cross-episode reads within the selected address remain rejected. Unregistered addresses return404.
+
+`recorded_steps` distinguishes a true recorded reset step from an empty episode. Initial selection prefers an episode with actual steps and no capture error; incomplete episodes remain visible. A live index with a capture error is shown as a capture exception with unknown process state, not proof of a running model.
+
 ## Evaluation isolation update (2026-10-29)
 
 The production control port is a selector: unbound `/api/episodes` returns `[]`, unbound episode reads/mutations are rejected, and health reports `selection_required=true`. Open an evaluation with `POST /api/runs/select`. Its returned URL includes an opaque `evaluation` ID; the destination health/episode responses carry that same identity. A display `run` query is only a legacy lookup hint, and ambiguous names require explicit selection.

@@ -1,4 +1,5 @@
 import hashlib
+import http.client
 import io
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,9 +20,10 @@ from process_show.maps.scene_map import maps_for
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    allow_reuse_address = os.name != 'nt'
 
     def server_close(self):
+        if hasattr(self,'closing'):self.closing.set()
         if hasattr(self,"map_jobs"):self.map_jobs.close()
         super().server_close()
 
@@ -78,6 +80,36 @@ def make_server(store, host="127.0.0.1", port=8765):
             from process_show.service.evaluations import belongs
             return belongs(row['meta'],bound)
 
+        def proxy_evaluation(self,parsed):
+            match=re.fullmatch(r'/evaluations/([A-Za-z0-9_-]{1,64})/(.*)',parsed.path)
+            if not match:return False
+            sessions=getattr(self.server,'run_sessions',None)
+            if sessions is None:self.json({'error':'Evaluation routing unavailable'},404);return True
+            with sessions.lock:entry=sessions.sessions.get(match[1])
+            if entry is None:self.json({'error':'请从选择列表重新打开该测评'},404);return True
+            target='/'+match[2]+('?' + parsed.query if parsed.query else '')
+            size=int(self.headers.get('Content-Length','0'))
+            if not 0<=size<=65536:raise ValueError('Invalid request size')
+            body=self.rfile.read(size) if size else None
+            headers={k:v for k,v in self.headers.items() if k.lower() not in ('connection','accept-encoding','transfer-encoding')}
+            connection=http.client.HTTPConnection('127.0.0.1',entry['port'],timeout=20)
+            started=False
+            try:
+                connection.request(self.command,target,body,headers)
+                response=connection.getresponse();started=True
+                self.send_response(response.status)
+                for name,value in response.getheaders():
+                    if name.lower() not in ('connection','transfer-encoding','server','date'):self.send_header(name,value)
+                self.send_header('Connection','close');self.end_headers();self.close_connection=True
+                while True:
+                    data=response.read1(65536)
+                    if not data:break
+                    self.wfile.write(data);self.wfile.flush()
+            except (OSError,http.client.HTTPException):
+                if not started:self.json({'error':'测评连接暂不可用，请从选择列表重试'},503)
+            finally:connection.close()
+            return True
+
         def do_GET(self):
             try:
                 self.probe_origin=None
@@ -85,6 +117,7 @@ def make_server(store, host="127.0.0.1", port=8765):
                 path,query = parsed.path,parse_qs(parsed.query)
                 token=getattr(self.server,'probe_token',None)
                 self.safe_request(allow_probe=bool(path=='/api/health' and token and query.get('probe',[None])[0]==token))
+                if self.proxy_evaluation(parsed):return
                 if path in ("/","/app.js","/style.css","/viewer.js","/viewer.css","/navigation.js","/route_overlay.js","/evaluation_scope.js"):
                     file = static / ("viewer.html" if path == "/" else path[1:])
                     return self.send_bytes(file.read_bytes(),mimetypes.guess_type(file.name)[0] or "text/plain")
@@ -122,7 +155,7 @@ def make_server(store, host="127.0.0.1", port=8765):
                     self.end_headers()
                     self.close_connection = True
                     last = None
-                    while True:
+                    while not self.server.closing.is_set():
                         from process_show.service.evaluations import revision
                         bound=getattr(self.server,'bound_run',None)
                         signature=revision(store,bound,hasattr(self.server,'run_sessions') and not bound)
@@ -130,7 +163,7 @@ def make_server(store, host="127.0.0.1", port=8765):
                         self.wfile.write(data.encode())
                         self.wfile.flush()
                         last = signature
-                        time.sleep(1)
+                        self.server.closing.wait(1)
                 map_match=re.fullmatch(r'/api/maps/([0-9a-f]{64})\.webp',path)
                 if map_match:
                     from process_show.storage.core import confined
@@ -262,6 +295,7 @@ def make_server(store, host="127.0.0.1", port=8765):
             try:
                 self.probe_origin=None
                 self.safe_request()
+                if self.proxy_evaluation(urlparse(self.path)):return
                 if not self.headers.get("Content-Type","").startswith("application/json"):
                     raise ValueError("JSON Content-Type required")
                 size = int(self.headers.get("Content-Length","0"))
@@ -318,6 +352,7 @@ def make_server(store, host="127.0.0.1", port=8765):
                 self.json({"error":str(exc)},400)
 
     server=Server((host,port),Handler)
+    server.closing=threading.Event()
     from .catalog import RunCatalog
     server.catalog_provider=RunCatalog(scope,store)
     from process_show.maps.map_jobs import MapJobs

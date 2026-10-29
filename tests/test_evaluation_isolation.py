@@ -127,5 +127,31 @@ class EvaluationIsolationTests(unittest.TestCase):
         self.assertTrue(step['rgb_available']);self.assertIn('published_at',step)
         self.assertTrue(self.store.path(eid,step['observation_asset']).is_file())
 
+    def test_one_forwarded_entry_serves_isolated_addresses_without_forwarding_each_port(self):
+        first,left_root=self.indexed('batch-one');second,right_root=self.indexed('batch-two',2)
+        def choice(source,identity):return {'id':identity,'run_id':'same-display-name','run_root':str(source),
+            'source_run':str(source),'model':'fixture','source_model':'fixture','stage':'test','catalog_only':True}
+        left,right=choice(left_root,'left'),choice(right_root,'right')
+        sync=SyncManager(self.store);sync.service_stop=threading.Event()
+        catalog=SimpleNamespace(get=lambda:{'runs':[left,right],'pending':False})
+        sessions=RunSessions(self.store,sync,catalog)
+        server=make_server(self.store,port=0);server.run_sessions=sessions;server.sync_manager=sync
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        try:
+            a=sessions.open(left);b=sessions.open(right)
+            self.assertNotEqual(a['port'],b['port'])
+            self.assertTrue(a['fallback_url'].startswith('/evaluations/left/'))
+            _,rows=self.request(server.server_port,'/evaluations/left/api/episodes')
+            self.assertEqual([r['id'] for r in rows],[first])
+            self.assertEqual(self.request(server.server_port,'/evaluations/left/api/episodes/'+second+'/replay')[0],403)
+            _,health=self.request(server.server_port,'/evaluations/right/api/health')
+            self.assertEqual(health['evaluation_id'],'right')
+            self.assertEqual(self.request(server.server_port,'/evaluations/not-registered/api/episodes')[0],404)
+            connection=HTTPConnection('127.0.0.1',server.server_port,timeout=5)
+            connection.request('GET','/evaluations/left/api/events');response=connection.getresponse()
+            self.assertEqual(response.status,200);self.assertEqual(response.fp.readline(),b'event: update\n')
+            self.assertIn(b'revision',response.fp.readline());connection.close()
+        finally:sync.service_stop.set();server.shutdown();server.server_close();sessions.close_all()
+
 
 if __name__=='__main__':unittest.main()
