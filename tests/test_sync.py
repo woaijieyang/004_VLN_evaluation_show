@@ -46,6 +46,12 @@ class SyncTests(unittest.TestCase):
         with trace.open('a') as f:f.write(terminal[10:]+'\n')
         worker.next_scan=0;self.drain(worker)
         self.assertEqual(self.store.get(eid)['status'],'pending_encode')
+    def test_live_append_updates_without_waiting_for_full_discovery(self):
+        trace,manager,worker=self.source(False);self.drain(worker)
+        eid=self.store.list()[0]['id'];worker.next_scan=float('inf');worker.next_live_poll=0
+        with trace.open('a') as stream:stream.write(json.dumps({'kind':'terminal','steps':1,'native_metrics':{},'termination_reason':'stop'})+'\n')
+        self.drain(worker)
+        self.assertEqual(self.store.get(eid)['status'],'pending_encode')
     def test_retry_reports_errors_without_resetting_cursor(self):
         trace,manager,worker=self.source(False)
         with patch.object(worker.importer,'poll',side_effect=OSError('transient read failure')):self.drain(worker)

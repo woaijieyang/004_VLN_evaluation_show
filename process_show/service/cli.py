@@ -125,12 +125,7 @@ def main(argv=None):
     elif args.command=="serve" and args.config:
         config=json.loads(args.config.read_text(encoding="utf-8"))
         sources=config.get("sources",[])
-        selected_path=store.root/'selected-run.json'
-        if selected_path.is_file():
-            selected=json.loads(selected_path.read_text(encoding='utf-8'))
-            scope.source(selected['run_root'])
-            if not selected.get('expires_at') or selected['expires_at']>time.time() or selected.get('retained'):
-                sources=[] if selected.get('catalog_only') else [dict(run_root=selected['run_root'],stage=selected['stage'],model=selected.get('source_model',selected['model']),include_history=True)]
+        # A tab's last selection must never replace the project's configured watchers.
         for source in sources:
             importer=Importer(store,source["run_root"],source["stage"],source["model"],source.get("adapter","case1"),source.get("started_at"),lazy=True)
             source_sync=sync.add(importer,source.get("include_history",False),limit=source.get("max_episodes",0))

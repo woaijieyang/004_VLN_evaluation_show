@@ -1,5 +1,17 @@
 # process-show v1 interface
 
+## Evaluation isolation update (2026-10-29)
+
+The production control port is a selector: unbound `/api/episodes` returns `[]`, unbound episode reads/mutations are rejected, and health reports `selection_required=true`. Open an evaluation with `POST /api/runs/select`. Its returned URL includes an opaque `evaluation` ID; the destination health/episode responses carry that same identity. A display `run` query is only a legacy lookup hint, and ambiguous names require explicit selection.
+
+Indexed SDK/adapter runs with `source_run` are catalogued even without Case1-style primitive traces. Identity includes source directory, run and model. SDK-only records without a source directory remain grouped by run/model. Source paths stay within the final project root. Same Episode/run/model IDs in different source directories no longer share a newly created episode; previously registered episode IDs and trace cursors remain usable.
+
+Generic versioned JSONL is also discovered directly from project-local input directories without a Case1 manifest or shard tree. Each `*.jsonl` episode starts with a complete `schema_version=1,type=start` metadata record. Different run/model identities in one folder are catalogued separately; selected importers only tail their matching files. Metadata retains the true source directory. Partial last lines wait for append, and unrelated score JSONL is not treated as telemetry. The CLI also retains configured source watchers on restart; the last browser selection cannot silently replace them.
+
+Bound `/api/sync`, `/api/refresh` and SSE revisions are evaluation-scoped. `/api/runs.selected` describes the requesting listener, not the last selection made in a different tab. Sync includes `evaluation_id`, `capture_mode`, `last_index_update`, `record_age_seconds`, `live_records` and `capture_errors`; an old live record is not proof that its producing process is still running. Directory-level retention policy remains shared as documented.
+
+SDK consumers publish observation assets and steps before deferred composite rendering. Existing active traces are checked every 0.5 seconds independently of full discovery. This does not recover previously dropped observations or missing terminal events; producers must end and drain their Recorder on normal exit.
+
 ## Local scope, evaluation catalog and ports
 
 The three launchers share tools/entry.py and start only a local service. The final root is the plugin parent directory. Native configuration is generated/rebound locally; outside-root source paths and symlink/junction escapes are rejected. No SSH or cross-OS mapping is required by these launchers.

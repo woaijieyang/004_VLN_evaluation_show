@@ -1,0 +1,12 @@
+const assert=require('node:assert/strict');
+const scope=require('../process_show/web/evaluation_scope.js');
+const runs=[{id:'batch-a',run_id:'same',model:'model'},{id:'batch-b',run_id:'same',model:'model'}];
+assert.equal(scope.resolve({},runs,new URLSearchParams()).mode,'choose');
+assert.equal(scope.resolve({},runs,new URLSearchParams('run=same')).mode,'choose');
+assert.equal(scope.resolve({},runs,new URLSearchParams('evaluation=batch-b')).evaluation.id,'batch-b');
+assert.equal(scope.resolve({},runs,new URLSearchParams('evaluation=missing&run=same')).mode,'choose');
+assert.equal(scope.resolve({evaluation_id:'batch-a',evaluation:runs[0]},runs,new URLSearchParams('run=wrong')).evaluation.id,'batch-a');
+assert.equal(scope.accepts({evaluation_id:'batch-b'},'batch-a'),false);
+assert.equal(scope.accepts({evaluation_id:'batch-a'},'batch-a'),true);
+assert.equal(scope.accepts({run_id:'same'},null),false);
+console.log('Evaluation isolation: 8 assertions passed');

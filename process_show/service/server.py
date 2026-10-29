@@ -74,8 +74,9 @@ def make_server(store, host="127.0.0.1", port=8765):
 
         def allowed_episode(self,row):
             bound=getattr(self.server,'bound_run',None)
-            if not bound:return True
-            return row['meta']['run_id']==bound['run_id'] and (row['meta']['model']==bound.get('source_model',bound['model']) if bound.get('catalog_only') else row['meta'].get('source_run')==bound['run_root'])
+            if not bound:return not hasattr(self.server,'run_sessions')
+            from process_show.service.evaluations import belongs
+            return belongs(row['meta'],bound)
 
         def do_GET(self):
             try:
@@ -84,13 +85,13 @@ def make_server(store, host="127.0.0.1", port=8765):
                 path,query = parsed.path,parse_qs(parsed.query)
                 token=getattr(self.server,'probe_token',None)
                 self.safe_request(allow_probe=bool(path=='/api/health' and token and query.get('probe',[None])[0]==token))
-                if path in ("/","/app.js","/style.css","/viewer.js","/viewer.css","/navigation.js","/route_overlay.js"):
+                if path in ("/","/app.js","/style.css","/viewer.js","/viewer.css","/navigation.js","/route_overlay.js","/evaluation_scope.js"):
                     file = static / ("viewer.html" if path == "/" else path[1:])
                     return self.send_bytes(file.read_bytes(),mimetypes.guess_type(file.name)[0] or "text/plain")
                 if path == '/api/runs':
                     value=self.server.catalog_provider.get()
-                    selected_path=store.root/'selected-run.json'
-                    value['selected']=json.loads(selected_path.read_text(encoding='utf-8')) if selected_path.is_file() else None
+                    bound=getattr(self.server,'bound_run',None)
+                    value['selected']=next((r for r in value['runs'] if r['id']==bound['id']),bound) if bound else None
                     return self.json(value)
                 if path == "/api/episodes":
                     rows=store.list()
@@ -102,13 +103,17 @@ def make_server(store, host="127.0.0.1", port=8765):
                         except ValueError:continue
                         r['meta']={k:v for k,v in r['meta'].items() if k in ('run_id','dataset','split','date','stage','scene_id','episode_id','model','instruction_id','source_completed','source_total_steps','video_version')}
                         r.pop('result',None);r.pop('directory',None)
+                        r['evaluation_id']=getattr(self.server,'bound_run',{}).get('id')
                         safe_rows.append(r)
                     return self.json(safe_rows)
                 if path == '/api/health':
-                    return self.json({'app':'process-show','running':True,'pid':os.getpid(),'api_version':1,'project_root':str(scope.project),'scope_id':scope.scope_id,'project_name':scope.project.name,'project_id':scope.config['project_id'],'service_port':self.server.server_port,'run_id':getattr(self.server,'bound_run',{}).get('run_id'),'evaluation_id':getattr(self.server,'bound_run',{}).get('id')})
+                    bound=getattr(self.server,'bound_run',{})
+                    return self.json({'app':'process-show','running':True,'pid':os.getpid(),'api_version':1,'project_root':str(scope.project),'scope_id':scope.scope_id,'project_name':scope.project.name,'project_id':scope.config['project_id'],'service_port':self.server.server_port,'run_id':bound.get('run_id'),'evaluation_id':bound.get('id'),'evaluation':bound or None,'selection_required':hasattr(self.server,'run_sessions') and not bound})
                 if path == '/api/sync':
                     manager=getattr(self.server,'sync_manager',None)
-                    return self.json(manager.snapshot() if manager else {'sources':[],'configured_sources':0,'expired_episodes':0})
+                    bound=getattr(self.server,'bound_run',None)
+                    if hasattr(self.server,'run_sessions') and not bound:return self.json({'sources':[],'configured_sources':0,'expired_episodes':0,'selection_required':True})
+                    return self.json(manager.snapshot(bound) if manager else {'sources':[],'configured_sources':0,'expired_episodes':0})
                 if path == "/api/policy":
                     return self.json({"policy":store.setting("policy"),"usage_bytes":store.usage()})
                 if path == "/api/events":
@@ -118,8 +123,9 @@ def make_server(store, host="127.0.0.1", port=8765):
                     self.close_connection = True
                     last = None
                     while True:
-                        with store.db() as db:
-                            signature=dumps(list(db.execute('SELECT COUNT(*),MAX(updated),SUM(pinned),SUM(selected) FROM episodes WHERE deleted IS NULL').fetchone()))
+                        from process_show.service.evaluations import revision
+                        bound=getattr(self.server,'bound_run',None)
+                        signature=revision(store,bound,hasattr(self.server,'run_sessions') and not bound)
                         data = "event: update\ndata: "+dumps({"revision":signature})+"\n\n" if signature != last else ": heartbeat\n\n"
                         self.wfile.write(data.encode())
                         self.wfile.flush()
@@ -274,7 +280,9 @@ def make_server(store, host="127.0.0.1", port=8765):
                     manager=getattr(self.server,'sync_manager',None)
                     if not manager:return self.json({'error':'No configured source watcher; start with the project watch config'},409)
                     if set(body)-{'history'}:raise ValueError('Only configured sources may be refreshed')
-                    return self.json(manager.request(body.get('history',True)),202)
+                    bound=getattr(self.server,'bound_run',None)
+                    if hasattr(self.server,'run_sessions') and not bound:return self.json({'error':'请先选择测评，再刷新它的数据'},409)
+                    return self.json(manager.request(body.get('history',True),bound),202)
                 if self.path == '/api/runs/select':
                     if set(body)!={'id'} or not isinstance(body['id'],str):raise ValueError('请指定列表中的测评 ID')
                     import sys

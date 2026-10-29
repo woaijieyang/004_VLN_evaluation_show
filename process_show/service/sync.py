@@ -14,6 +14,7 @@ class SourceSync:
         self.halt=threading.Event();self.done=threading.Event();self.done.set()
         self.state={'source':importer.root.name,'history_enabled':history,'phase':'waiting','discovered':0,'excluded_history':0,'pending':0,'expired':0,'indexed':0,'last_scan':None,'last_progress':None,'errors':[],'limit':limit}
         self.excluded=None
+        self.live_paths=[];self.next_live_poll=0
 
     def request(self, history):
         with self.lock:
@@ -58,6 +59,7 @@ class SourceSync:
                 # Newly appended active sources first; rotate all pending traces fairly.
                 queue.append(((path.parent/'result.json').is_file(),path))
             except OSError as exc:self.failed(path,exc)
+        self.live_paths=[p for p in paths if sealed.get(cursors.get(str(p),(0,{}))[1].get('eid'),('live',False))[0]=='live']
         active=[p for historical,p in queue if not historical]
         history_paths={str(p):p for historical,p in queue if historical}
         remaining=[p for p in self.queue if str(p) in history_paths]
@@ -74,6 +76,17 @@ class SourceSync:
 
     def tick(self):
         if time.monotonic()>=self.next_scan:self.scan()
+        elif time.monotonic()>=self.next_live_poll:
+            queued={str(p) for p in self.queue}
+            for path in self.live_paths:
+                key=str(path)
+                if key in queued or self.failures.get(key,{}).get('retry_at',0)>time.monotonic():continue
+                try:
+                    stat=path.stat();result=path.parent/'result.json'
+                    signature=(stat.st_size,stat.st_mtime_ns,stat.st_dev,stat.st_ino,result.stat().st_mtime_ns if result.is_file() else 0)
+                    if self.signatures.get(key)!=signature:self.queue.appendleft(path)
+                except OSError as exc:self.failed(path,exc)
+            self.next_live_poll=time.monotonic()+.5
         deadline=time.monotonic()+.3
         while self.queue and time.monotonic()<deadline:
             path=self.queue.popleft();key=str(path)
@@ -116,19 +129,37 @@ class SyncManager:
         saved=json.loads(row[0]) if row else {}
         source=SourceSync(importer,saved.get(str(importer.root),history),traces,limit)
         self.sources.append(source);return source
-    def request(self,history):
+    def evaluation_sources(self,chosen=None):
+        if chosen is None:return self.sources
+        from process_show.service.evaluations import source_key
+        return [s for s in self.sources if source_key(s.root)==source_key(chosen['run_root'])
+                and (chosen.get('adapter')!='generic' or (getattr(getattr(s,'importer',None),'evaluation',None) or {}).get('id')==chosen['id'])]
+
+    def request(self,history,chosen=None):
         if type(history) is not bool:raise ValueError('history must be boolean')
         with self.store.db() as db:
             row=db.execute("SELECT value FROM settings WHERE key='sync_history'").fetchone()
             saved=json.loads(row[0]) if row else {}
-            saved.update({s.root:history for s in self.sources})
+            saved.update({s.root:history for s in self.evaluation_sources(chosen)})
             db.execute("INSERT INTO settings VALUES ('sync_history',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(dumps(saved),))
-        for source in self.sources:source.request(history)
-        return self.snapshot()
-    def snapshot(self):
+        for source in self.evaluation_sources(chosen):source.request(history)
+        return self.snapshot(chosen)
+    def snapshot(self,chosen=None):
         with self.store.db() as db:
-            expired=db.execute('SELECT COUNT(*) FROM episodes WHERE deleted IS NOT NULL').fetchone()[0]
-        return {'sources':[s.snapshot() for s in self.sources],'expired_episodes':expired,'configured_sources':len(self.sources),'scope':'configured project run roots only'}
+            rows=db.execute('SELECT meta FROM episodes WHERE deleted IS NOT NULL').fetchall()
+            active=db.execute('SELECT meta,updated,status,error FROM episodes WHERE deleted IS NULL').fetchall()
+        from process_show.service.evaluations import belongs
+        expired=sum(not chosen or belongs(json.loads(r[0]),chosen) for r in rows)
+        sources=self.evaluation_sources(chosen)
+        active=[r for r in active if not chosen or belongs(json.loads(r['meta']),chosen)]
+        last=max((r['updated'] for r in active),default=None)
+        return {'sources':[s.snapshot() for s in sources],'expired_episodes':expired,'configured_sources':len(sources),
+                'scope':'selected evaluation only' if chosen else 'configured project run roots only',
+                'evaluation_id':chosen['id'] if chosen else None,
+                'capture_mode':'indexed_producer' if chosen and chosen.get('catalog_only') else 'trace_watcher',
+                'last_index_update':last,'record_age_seconds':max(0,time.time()-last) if last else None,
+                'live_records':sum(r['status']=='live' for r in active),
+                'capture_errors':[r['error'] for r in active if r['error']][:10]}
 
     def select_run(self,chosen):
         from process_show.capture.adapters import Importer
@@ -155,7 +186,13 @@ class SyncManager:
         with self.selection_lock:
             if chosen.get('catalog_only'):return
             for source in self.sources:
-                if source.root==chosen['run_root'] and not source.halt.is_set():source.request(True);return
-            importer=Importer(self.store,chosen['run_root'],chosen['stage'],chosen.get('source_model',chosen['model']),lazy=True)
+                if source.root!=chosen['run_root'] or source.halt.is_set():continue
+                if chosen.get('adapter')=='generic':
+                    bound=source.importer.evaluation
+                    if bound and bound['id']!=chosen['id']:continue
+                    if not bound:return  # An explicitly configured directory watcher already owns these cursors.
+                source.request(True);return
+            importer=Importer(self.store,chosen['run_root'],chosen['stage'],chosen.get('source_model',chosen['model']),adapter=chosen.get('adapter','case1'),lazy=True)
+            if chosen.get('adapter')=='generic':importer.evaluation=chosen
             source=self.add(importer,True);source.request(True);source.done.clear()
             threading.Thread(target=source.run,args=(self.service_stop,),daemon=True).start()

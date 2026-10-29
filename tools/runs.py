@@ -7,6 +7,7 @@ plugin=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(plugin))
 from process_show.core import confined,atomic_json
 from process_show.scope import Scope
+from process_show.capture.adapters import generic_metadata
 
 def read_json(path):
     try:return json.loads(path.read_text(encoding='utf-8'))
@@ -25,6 +26,42 @@ def run_folders(project,output):
         if 'run_manifest.json' in files:
             dirs[:]=[]
             yield path
+        elif any(name.endswith('.jsonl') and generic_metadata(path/name) for name in files):
+            yield path
+
+
+def generic_runs(root,manifest,ttl,retained,now):
+    groups={}
+    for path in root.glob('*.jsonl'):
+        if path.is_symlink():continue
+        confined(root,path)
+        meta=generic_metadata(path)
+        if not meta:continue
+        ended=False
+        with path.open('rb') as stream:
+            stream.seek(max(0,path.stat().st_size-65536));tail=stream.read()
+        if tail.endswith(b'\n'):
+            try:
+                last=json.loads(tail.splitlines()[-1]);ended=last.get('type')=='end' and last.get('schema_version')==1
+            except (ValueError,IndexError,AttributeError):pass
+        groups.setdefault((meta['run_id'],meta['model']),[]).append((meta,path.stat().st_mtime,ended))
+    entries=[];expired=0
+    for (run_id,model),records in groups.items():
+        meta=records[0][0];completed=sum(r[2] for r in records)
+        expires=max(r[1] for r in records)+ttl if completed==len(records) else None
+        keep=str(root) in retained
+        if expires and expires<=now and not keep:expired+=1;continue
+        started=meta.get('started_at',manifest.get('created_at'))
+        try:date=datetime.fromisoformat(started.replace('Z','+00:00')).astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
+        except (AttributeError,ValueError,TypeError):date=datetime.fromtimestamp(min(r[1] for r in records),timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
+        entries.append({'id':hashlib.sha256((str(root)+'|generic:'+run_id+'|'+model).encode()).hexdigest()[:20],
+            'run_id':run_id,'run_root':str(root),'date':date,'model':model,'source_model':model,
+            'model_sha':str(manifest.get('model_sha256',''))[:10],
+            'dataset':','.join(sorted({r[0].get('dataset','未知') for r in records})),
+            'completed':completed,'expected':manifest.get('expected_tasks') if isinstance(manifest.get('expected_tasks'),int) else None,
+            'status':'已记录结束（总任务数未知）' if completed==len(records) else '采集中记录（进程状态未知）',
+            'expires_at':expires,'retained':keep,'stage':meta.get('stage','evaluation'),'adapter':'generic'})
+    return entries,expired,set(groups)
 
 def discover(project,output,now=None):
     project=Path(project).absolute();output=Path(output).absolute();now=time.time() if now is None else now
@@ -42,22 +79,25 @@ def discover(project,output,now=None):
                 if value.get('source_run'):
                     source_models.setdefault(value['source_run'],value['model'])
                     source_stages.setdefault(value['source_run'],value['stage'])
-            for row in db.execute('SELECT meta,status,result,ready,created,pinned,selected,deleted FROM episodes'):
+            for row in db.execute('SELECT meta,status,result,ready,created,pinned,selected,deleted,updated FROM episodes'):
                 value=json.loads(row[0])
-                if not value.get('source_run'):
-                    collected.setdefault((value['run_id'],value['model']),[]).append((value,*row[1:]))
-    entries=[];expired=0;errors=[]
+                collected.setdefault((value.get('source_run'),value['run_id'],value['model']),[]).append((value,*row[1:]))
+    entries=[];expired=0;errors=[];trace_groups=set()
     confined(project,project)
     for folder in run_folders(project,output):
         if folder==output or folder.is_symlink() or not folder.is_dir():continue
         try:
             root=confined(project,folder);manifest_path=confined(project,root/'run_manifest.json')
-            if not manifest_path.is_file():continue
             manifest=read_json(manifest_path)
             # Only the supported trace format can be selected. Scores alone are not replay.
             trace=next(root.glob('shards/shard-*/attempt-*/episodes/*/trace.jsonl'),None)
-            if trace is None:continue
+            if trace is None:
+                generic,count,groups=generic_runs(root,manifest,ttl,retained,now)
+                entries.extend(generic);expired+=count
+                trace_groups.update((str(root),run_id,model) for run_id,model in groups)
+                continue
             confined(root,trace)
+            trace_groups.add((str(root),root.name,source_models.get(str(root),str(manifest.get('model','未提供模型名称')))))
             progress_path=confined(project,root/'progress.json');progress=read_json(progress_path)
             completed=progress.get('completed',0);expected=progress.get('expected',manifest.get('expected_tasks'))
             if isinstance(expected,list):expected=len(expected)
@@ -86,7 +126,11 @@ def discover(project,output,now=None):
                             'status':'已完成' if finished else '运行中（进度记录）' if active else '状态未知',
                             'expires_at':expires,'retained':keep,'stage':source_stages.get(str(root),manifest.get('stage','evaluation'))})
         except (OSError,ValueError) as exc:errors.append({'run':folder.name,'error':str(exc)})
-    for (run_id,model),rows in collected.items():
+    for (source_run,run_id,model),rows in collected.items():
+        if source_run:
+            try:confined(project,Path(source_run).absolute())
+            except ValueError:continue
+            if (source_run,run_id,model) in trace_groups:continue
         alive=[r for r in rows if r[7] is None]
         if not alive:expired+=1;continue
         keep=any(r[5] or r[6] for r in alive)
@@ -95,12 +139,15 @@ def discover(project,output,now=None):
         expires=None if active or unfinished else max(r[3] for r in alive)+ttl
         if expires is not None and expires<=now and not keep:expired+=1;continue
         meta=alive[0][0]
-        entries.append({'id':hashlib.sha256((str(output)+'|catalog:'+run_id+'|'+model).encode()).hexdigest()[:20],'run_id':run_id,'run_root':str(output),
+        identity=str(output)+'|catalog:'+run_id+'|'+model
+        if source_run:identity+='|source:'+source_run
+        entries.append({'id':hashlib.sha256(identity.encode()).hexdigest()[:20],'run_id':run_id,'run_root':source_run or str(output),
                         'date':meta['date'],'model':meta['model'],'model_sha':str(meta.get('model_sha256',''))[:10],
                         'dataset':','.join(sorted({r[0]['dataset'] for r in alive})),'source_model':meta['model'],
                         'completed':sum(r[2] is not None for r in alive),'expected':None,
                         'status':'存在采集中记录' if active else '视频处理中' if unfinished else '已采集记录（总任务数未知）',
-                        'expires_at':expires,'retained':keep,'stage':meta['stage'],'catalog_only':True})
+                        'expires_at':expires,'retained':keep,'stage':meta['stage'],'catalog_only':True,
+                        'source_run':source_run,'last_update':max(r[8] for r in alive)})
     return {'runs':sorted(entries,key=lambda r:r['date'],reverse=True),'expired_runs':expired,'ttl_seconds':ttl,'errors':errors,'scanned_at':now}
 
 def select(scope,selection,persist_watch=True):
@@ -112,9 +159,14 @@ def select(scope,selection,persist_watch=True):
     scope.source(chosen['run_root'])
     if not persist_watch:return chosen
     source={k:chosen[k] for k in ('run_root','stage','model')};source['model']=chosen.get('source_model',chosen['model']);source['include_history']=True
+    source['adapter']=chosen.get('adapter','case1')
     config=scope.source(scope.project/scope.config['watch_config'])
     config.parent.mkdir(parents=True,exist_ok=True)
-    atomic_json(config,{'sources':[source],'selection':{k:chosen[k] for k in ('id','run_id','date','model','dataset','completed','expected')}})
+    existing=read_json(config)
+    sources=existing.get('sources',[])
+    if not chosen.get('catalog_only'):
+        sources=[s for s in sources if s.get('run_root')!=source['run_root']]+[source]
+    atomic_json(config,dict(existing,sources=sources,selection={k:chosen[k] for k in ('id','run_id','date','model','dataset','completed','expected')}))
     return chosen
 
 if __name__=='__main__':

@@ -38,14 +38,14 @@ with tempfile.TemporaryDirectory(prefix='local-service-',dir=qa) as temporary:
         selected=json.load(opener.open(req,timeout=15));assert selected['selected']['run_id']=='synthetic-local-run'
         deadline=time.monotonic()+15;rows=[]
         while time.monotonic()<deadline:
-            rows=get('/api/episodes')
+            rows=json.load(opener.open(selected['url'].split('/?')[0]+'/api/episodes',timeout=15))
             if rows and rows[0]['status'] in ('ready','encode_error'):break
             time.sleep(.2)
         assert len(rows)==1,rows
         if rows[0]['status']!='ready':
             print(json.dumps({'status':rows[0]['status'],'error':rows[0].get('error'),'sync':get('/api/sync'),'service_log':(root/'outputs/process-show/service.log').read_text(errors='replace')[-6000:]}),flush=True)
         assert rows[0]['status']=='ready',rows[0].get('error')
-        media=opener.open(base+'/api/episodes/'+rows[0]['id']+'/video',timeout=15).read()
+        media=opener.open(selected['url'].split('/?')[0]+'/api/episodes/'+rows[0]['id']+'/video',timeout=15).read()
         assert b'ftyp' in media[:32]
         before=started['pid'];service('stop');assert not json.loads(service('status'))['running']
         restarted=json.loads(service('start'));assert restarted['pid']!=before

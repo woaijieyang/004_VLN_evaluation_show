@@ -18,6 +18,8 @@ class RunSessions:
         with self.lock:
             entry=self.sessions.get(chosen['id'])
             if entry:
+                entry['server'].bound_run=chosen
+                entry['chosen']=chosen
                 atomic_json(self.store.root/'selected-run.json',chosen)
                 return {'selected':chosen,'url':entry['url'],'port':entry['port'],'probe_token':entry['server'].probe_token}
             if len(self.sessions)>=16:raise ValueError('本目录已打开16个测评服务，请先停止不用的测评')
@@ -34,6 +36,7 @@ class RunSessions:
             if self.catalog:server.catalog_provider=self.catalog
             server.stop_callback=lambda:self.close(chosen['id'])
             url=f'http://127.0.0.1:{server.server_port}/?run='+quote(chosen['run_id'])
+            url+='&evaluation='+quote(chosen['id'])
             if chosen.get('catalog_only'):url+='&model='+quote(chosen['model'])
             self.sessions[chosen['id']]={'server':server,'url':url,'port':server.server_port,'chosen':chosen}
             self.prior[chosen['id']]={'url':url,'port':server.server_port,'run_id':chosen['run_id'],'root':chosen['run_root'],'chosen':chosen}

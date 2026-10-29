@@ -31,7 +31,7 @@ def _consumer(root, events, control):
                     rgb = Image.fromarray(rgb)
                 if bev is not None and not isinstance(bev, Image.Image):
                     bev = Image.fromarray(bev)
-                engine.step(eid,step,rgb,bev)
+                engine.step(eid,step,rgb,bev,render_preview=False)
             except Exception as exc:
                 engine.store.error(eid, "capture: "+str(exc))
             processed += 1

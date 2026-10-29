@@ -15,7 +15,7 @@ class Engine:
     def start(self, meta):
         return self.store.create(meta)
 
-    def step(self, eid, step, rgb=None, map_image=None):
+    def step(self, eid, step, rgb=None, map_image=None, render_preview=True):
         store = self.store
         store.capacity()
         start = time.monotonic()
@@ -46,7 +46,10 @@ class Engine:
             existing.update({k:v for k,v in step.items() if k not in ("rgb_available", "map_available", "previews")})
             store.put_step(eid,existing)
             return
-        store.put_step(eid,step)  # validate before touching images
+        step['published_at']=time.time()
+        store.put_step(eid,step)
+        if not render_preview:
+            return  # RGB + telemetry are already available; exports compose on demand.
         folder = store.path(eid,"previews")
         folder.mkdir(exist_ok=True)
         history = [s for s in previous if s["step"] != step["step"]] + [step]

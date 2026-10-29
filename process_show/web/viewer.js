@@ -2,12 +2,12 @@
 const $=id=>document.getElementById(id);
 let selectedRun=new URLSearchParams(location.search).get('run');
 let selectedModel=new URLSearchParams(location.search).get('model');
-const state={listLimit:150,episodes:[],episode:null,steps:[],step:0,follow:false,playing:false,speed:1,map:null,mapImage:null,mapKey:'',mapZoom:1,pan:[0,0],fullMap:false,viewSpan:null,requestedStep:0,anchors:null,mapHits:[]};
+const state={evaluationId:null,listLimit:150,episodes:[],episode:null,steps:[],step:0,follow:false,playing:false,speed:1,map:null,mapImage:null,mapKey:'',mapZoom:1,pan:[0,0],fullMap:false,viewSpan:null,requestedStep:0,anchors:null,mapHits:[]};
 let refreshBusy=false,refreshAgain=false,replayBusy=false,replayController=null,paintHandle=0,imageTimer=null,loadedObservation=null,policy=null,lastPlayback=0;
 let selectionVersion=0,imageVersion=0,draggingMap=null,mapLoading=false;
 const cards=new Map(),imageCache=new Map(),mapCache=new Map(),actionNodes=new Map();
 let activeAction=null;
-const statusLabels={live:'进行中',ready:'视频就绪',pending_encode:'等待视频编码',encoding:'视频编码中',encode_error:'编码失败'};
+const statusLabels={live:'采集中记录',ready:'视频就绪',pending_encode:'等待视频编码',encoding:'视频编码中',encode_error:'编码失败'};
 const text=(id,value)=>{$(id).textContent=value??'—';};
 async function api(path,body,signal){
  const controller=new AbortController();let timedOut=false;
@@ -17,9 +17,9 @@ async function api(path,body,signal){
  catch(error){if(timedOut)throw Error('请求超时，请点击“刷新 / 补载历史”重试');throw error;}
  finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
 }
-function filtered(){const query=$('search').value.trim().toLowerCase(),filter=$('state').value;return state.episodes.filter(e=>{const m=e.meta;return (!selectedRun||m.run_id===selectedRun)&&(!selectedModel||m.model===selectedModel)&&(!query||[m.episode_id,m.scene_id,m.model].some(x=>String(x).toLowerCase().includes(query)))&&(!$('dataset').value||m.dataset===$('dataset').value)&&(!$('date').value||m.date===$('date').value)&&(!$('stage').value||m.stage.includes($('stage').value))&&(!filter||(filter==='kept'?(e.pinned||e.selected):['success','failure'].includes(filter)?e.outcome===filter:e.status===filter));});}
+function filtered(){const query=$('search').value.trim().toLowerCase(),filter=$('state').value;return state.episodes.filter(e=>{const m=e.meta;return EvaluationScope.accepts(e,state.evaluationId)&&(!query||[m.episode_id,m.scene_id,m.model].some(x=>String(x).toLowerCase().includes(query)))&&(!$('dataset').value||m.dataset===$('dataset').value)&&(!$('date').value||m.date===$('date').value)&&(!$('stage').value||m.stage.includes($('stage').value))&&(!filter||(filter==='kept'?(e.pinned||e.selected):['success','failure'].includes(filter)?e.outcome===filter:e.status===filter));});}
 function renderList(){const box=$('episodes'),scroll=box.scrollTop,matches=filtered(),items=matches.slice(0,state.listLimit),visible=new Set(items.map(x=>x.id));text('count',state.episodes.length);text('list-summary',`显示 ${items.length} / 匹配 ${matches.length} 条 · 索引共 ${state.episodes.length} 条`);$('load-more').hidden=items.length>=matches.length;for(const e of items){let node=cards.get(e.id);if(!node){node=document.createElement('button');node.className='episode';node.dataset.episode=e.id;node.innerHTML='<div class="episode-top"><span></span><span></span></div><div class="episode-title"></div><div class="episode-scene"></div><div class="episode-status"></div>';node.onclick=()=>choose(e.id);cards.set(e.id,node);}node.classList.toggle('selected',state.episode?.id===e.id);const [dataset,kept]=node.querySelectorAll('.episode-top span');dataset.textContent=e.meta.dataset;kept.textContent=e.pinned?'★ 固定':e.selected?'保留':'';node.querySelector('.episode-title').textContent='Episode '+e.meta.episode_id;node.querySelector('.episode-scene').textContent=e.meta.scene_id;const label=node.querySelector('.episode-status');label.textContent=`${e.catching_up?e.max_step+'/'+(e.meta.source_total_steps??'?'):e.max_step} 步 · ${e.catching_up?'同步历史':e.outcome==='success'?'成功':e.outcome==='failure'?'失败':statusLabels[e.status]||e.status}`;label.className='episode-status '+(e.outcome||'');box.append(node);}for(const node of [...box.children]){if(!visible.has(node.dataset.episode))node.remove();}box.scrollTop=scroll;}
-async function refresh(){if(state.serviceStopped)return;if(refreshBusy){refreshAgain=true;return;}refreshBusy=true;try{state.episodes=await api('/api/episodes');const value=$('dataset').value,options=[...new Set(state.episodes.map(e=>e.meta.dataset))];if([...$('dataset').options].slice(1).map(o=>o.value).join('|')!==options.join('|')){$('dataset').replaceChildren(new Option('全部数据集',''),...options.map(x=>new Option(x,x)));$('dataset').value=value;}renderList();syncKeepDatasets();if(state.awaitingRun&&!state.episode&&filtered().length){state.awaitingRun=false;await choose(filtered()[0].id);}if(state.episode){const summary=state.episodes.find(e=>e.id===state.episode.id);if(!summary){stop();state.episode=null;$('viewer').hidden=true;$('empty').hidden=false;}else if(summary.updated!==state.episode.updated||summary.status!==state.episode.status){await loadReplay(false);}else{state.episode.pinned=summary.pinned;state.episode.selected=summary.selected;header();}}}catch(error){text('connection',error.message);}finally{refreshBusy=false;if(refreshAgain){refreshAgain=false;refresh();}}}
+async function refresh(){if(state.serviceStopped||!state.evaluationId)return;if(refreshBusy){refreshAgain=true;return;}refreshBusy=true;try{state.episodes=await api('/api/episodes');const value=$('dataset').value,options=[...new Set(state.episodes.map(e=>e.meta.dataset))];if([...$('dataset').options].slice(1).map(o=>o.value).join('|')!==options.join('|')){$('dataset').replaceChildren(new Option('全部数据集',''),...options.map(x=>new Option(x,x)));$('dataset').value=value;}renderList();syncKeepDatasets();if(state.awaitingRun&&!state.episode&&filtered().length){state.awaitingRun=false;await choose(filtered()[0].id);}if(state.episode){const summary=state.episodes.find(e=>e.id===state.episode.id);if(!summary){stop();state.episode=null;$('viewer').hidden=true;$('empty').hidden=false;}else if(summary.updated!==state.episode.updated||summary.status!==state.episode.status){await loadReplay(false);}else{state.episode.pinned=summary.pinned;state.episode.selected=summary.selected;header();}}}catch(error){text('connection',error.message);}finally{refreshBusy=false;if(refreshAgain){refreshAgain=false;refresh();}}}
 async function choose(id){stop();selectionVersion++;imageVersion++;replayController?.abort();replayBusy=false;state.episode={...state.episodes.find(e=>e.id===id)};state.steps=[];text('raw','正在加载当前任务…');actionNodes.clear();activeAction=null;$('action-sequence').replaceChildren();state.step=0;state.requestedStep=0;state.anchors=null;state.follow=state.episode.status==='live'&&!state.episode.catching_up;state.map=null;state.mapImage=null;state.mapKey='';state.mapZoom=1;state.pan=[0,0];state.fullMap=false;state.viewSpan=null;text('fit-map','全局路线');loadedObservation=null;$('rgb').hidden=true;$('rgb-empty').hidden=false;$('rgb-empty').textContent='正在加载已记录观测';$('viewer').hidden=false;$('empty').hidden=true;renderList();await loadReplay(true);}
 async function loadReplay(full=false){if(!state.episode||replayBusy)return;replayBusy=true;const id=state.episode.id,version=selectionVersion;replayController=new AbortController();const after=full||!state.steps.length?'':`?after=${Math.max(0,state.steps.length-2)}`;try{const payload=await api(`/api/episodes/${id}/replay${after}`,undefined,replayController.signal);if(version!==selectionVersion)return;state.episode=payload.episode;state.anchors=payload.anchors;if(full)state.steps=[];for(const s of payload.steps)state.steps[s.step]=s;if(full)state.steps.length=payload.last_step+1;state.lastStep=payload.last_step;if(state.follow)state.requestedStep=payload.last_step;$('timeline').max=payload.last_step;$('step-number').max=payload.last_step;header();renderActionSequence();schedulePaint();requestMap();prefetch();}catch(error){if(error.name!=='AbortError')text('error',error.message);}finally{if(version===selectionVersion)replayBusy=false;}}
 function header(){
@@ -249,13 +249,16 @@ function configureRefresh(){
 function presentSync(info){
  const sources=info.sources||[],pending=sources.reduce((n,s)=>n+s.pending,0),excluded=sources.reduce((n,s)=>n+s.excluded_history,0),errors=sources.reduce((n,s)=>n+s.errors.length,0);
  const scanned=sources.every(s=>s.last_scan);
- text('refresh-status',!sources.length?'未配置原始数据源':!scanned?'正在扫描配置的数据源…':pending?`正在补载：${pending} 条记录待同步`:(errors?`同步有 ${errors} 项错误，可点击刷新重试`:excluded?`${excluded} 条历史尚未导入，点击补载`:'已检查原始记录 · 当前无待导入内容'));
+ text('refresh-status',info.selection_required?'请先选择一次测评；这里不会合并不同测评的任务':info.capture_mode==='indexed_producer'?'当前测评由 SDK / 适配器直接写入；步骤到达后实时更新':!sources.length?'当前测评没有配置原始数据源':!scanned?'正在扫描配置的数据源…':pending?`正在补载：${pending} 条记录待同步`:(errors?`同步有 ${errors} 项错误，可点击刷新重试`:excluded?`${excluded} 条历史尚未导入，点击补载`:'已检查原始记录 · 当前无待导入内容'));
  const box=$('sync-details');box.replaceChildren();
+ if(info.last_index_update){const pulse=document.createElement('p');pulse.textContent=`当前测评最近索引更新：${new Date(info.last_index_update*1000).toLocaleString()} · ${Math.round(info.record_age_seconds||0)} 秒前。`+(info.live_records&&info.record_age_seconds>30?'已有采集记录停更；源进程是否仍在运行未知。':'');box.append(pulse);}
+ for(const message of info.capture_errors||[]){const item=document.createElement('p');item.textContent='采集/处理错误：'+message;box.append(item);}
  for(const source of sources){const item=document.createElement('p');item.textContent=`${source.source}：发现 ${source.discovered} 条，已索引 ${source.indexed} 条，待同步 ${source.pending} 条。历史补载${source.history_enabled?'已开启':'未开启'}。`+(source.last_scan?` 上次扫描 ${new Date(source.last_scan*1000).toLocaleTimeString()}`:'');box.append(item);for(const error of source.errors){const el=document.createElement('p');el.textContent=`${error.path}：${error.message}`;box.append(el);}}
  const note=document.createElement('p');note.textContent=`已到期清除 ${info.expired_episodes||0} 条。刷新不会重建已删除视频；新增记录进入原有编码队列。`;box.append(note);
 }
 async function refreshSyncStatus(){if(syncBusy||state.serviceStopped)return;syncBusy=true;try{presentSync(await api('/api/sync'));}catch(e){text('refresh-status',e.message);}finally{syncBusy=false;}}
 $('refresh-data').onclick=async()=>{
+ if(!state.evaluationId){openRunDialog();return;}
  if(manualRefreshing||state.serviceStopped)return;manualRefreshing=true;$('refresh-data').disabled=true;text('refresh-status','正在重新扫描并重试当前画面…');
  try{
    presentSync(await api('/api/refresh',{history:$('refresh-history').checked}));
@@ -333,13 +336,31 @@ function renderRuns(){
  for(const run of matches){
   const card=document.createElement('article');card.className='run-card';
   const title=document.createElement('h3');title.textContent=run.date+' · '+run.model;
-  const identity=document.createElement('p');identity.textContent=run.dataset.toUpperCase()+' · 权重 '+(run.model_sha||'未记录')+' · '+run.run_id;
+  const identity=document.createElement('p');identity.textContent=run.dataset.toUpperCase()+' · '+run.stage+' · 权重 '+(run.model_sha||'未记录')+' · '+run.run_id;
+  const source=document.createElement('p');source.textContent='来源：'+run.run_root;source.className='run-source';
   const details=document.createElement('div');details.className='run-card-details';
-  for(const textValue of [`完成 ${run.completed} / ${run.expected??'?'} 条`,run.status,run.retained?'有保留样本':run.expires_at?'缓存至 '+new Date(run.expires_at*1000).toLocaleString():'进行中，暂不计时']){const badge=document.createElement('span');badge.textContent=textValue;details.append(badge);}
-  const button=document.createElement('button');button.className='primary';button.textContent=selectedRun===run.run_id&&(!run.catalog_only||selectedModel===run.model)?'查看当前测评':'选择并查看';
+  for(const textValue of [`完成 ${run.completed} / ${run.expected??'?'} 条`,run.status,run.retained?'有保留样本':run.expires_at?'缓存至 '+new Date(run.expires_at*1000).toLocaleString():'尚未进入到期计时']){const badge=document.createElement('span');badge.textContent=textValue;details.append(badge);}
+  const button=document.createElement('button');button.className='primary';button.textContent=state.evaluationId===run.id?'查看当前测评':'选择并查看';
   button.onclick=async()=>{
    button.disabled=true;text('run-error','');
    try{
+    await selectEvaluation(run);
+   }catch(error){text('run-error',error.message);button.disabled=false;}
+  };
+  card.append(title,identity,source,details,button);list.append(card);
+ }
+ if(!matches.length){const empty=document.createElement('p');empty.textContent=runCatalogPending?'正在扫描测评，列表会自动更新…':'没有符合条件且尚未过期的测评。请检查本目录是否已有受支持的测评记录，或点击刷新。';list.append(empty);}
+}
+async function openRunDialog(){
+ if(!$('run-dialog').open)$('run-dialog').showModal();if(runDialogBusy)return;runDialogBusy=true;text('run-error','');text('run-summary','正在读取当前根目录内的测评记录…');
+ try{
+  const [data,health]=await Promise.all([api('/api/runs'),api('/api/health')]);availableRuns=data.runs;runCatalogPending=!!data.pending;
+  text('run-root','作用范围：'+health.project_root+'（仅本机、本目录及其子目录）');
+  text('run-summary',data.pending?'正在扫描本目录测评，已有结果会先展示…':`可选 ${availableRuns.length} 个测评 · 已剔除 ${data.expired_runs} 个过期测评 · 缓存 ${Math.round(data.ttl_seconds/60)} 分钟`);renderRuns();
+  if(data.pending)setTimeout(()=>{if($('run-dialog').open)openRunDialog();},1200);
+ }catch(error){text('run-error',error.message);}finally{runDialogBusy=false;}
+}
+async function selectEvaluation(run){
     const result=await api('/api/runs/select',{id:run.id});
     if(result.probe_token){
      const probe=new URL('/api/health',result.url);probe.searchParams.set('probe',result.probe_token);
@@ -350,21 +371,36 @@ function renderRuns(){
      location.assign(result.url);return;
     }
     throw Error('服务版本未提供测评可达性校验，请刷新后重试。');
-   }catch(error){text('run-error',error.message);button.disabled=false;}
-  };
-  card.append(title,identity,details,button);list.append(card);
- }
- if(!matches.length){const empty=document.createElement('p');empty.textContent=runCatalogPending?'正在扫描测评，列表会自动更新…':'没有符合条件且尚未过期的测评。请检查本目录是否已有受支持的测评记录，或点击刷新。';list.append(empty);}
+
 }
-async function openRunDialog(){
- $('run-dialog').showModal();if(runDialogBusy)return;runDialogBusy=true;text('run-error','');text('run-summary','正在读取当前根目录内的测评记录…');
+async function initializeEvaluation(){
  try{
-  const [data,health]=await Promise.all([api('/api/runs'),api('/api/health')]);availableRuns=data.runs;runCatalogPending=!!data.pending;
-  text('run-root','作用范围：'+health.project_root+'（仅本机、本目录及其子目录）');
-  text('run-summary',data.pending?'正在扫描本目录测评，已有结果会先展示…':`可选 ${availableRuns.length} 个测评 · 已剔除 ${data.expired_runs} 个过期测评 · 缓存 ${Math.round(data.ttl_seconds/60)} 分钟`);renderRuns();
-  if(data.pending)setTimeout(()=>{if($('run-dialog').open)openRunDialog();},1200);
- }catch(error){text('run-error',error.message);}finally{runDialogBusy=false;}
+  const health=await api('/api/health');
+  if(health.evaluation_id){
+   const run=health.evaluation;state.evaluationId=health.evaluation_id;
+   selectedRun=health.run_id;selectedModel=run.catalog_only?run.source_model||run.model:null;
+   text('active-run',`${run.date||''} · ${run.model} · ${run.dataset||''} · ${run.run_id}`);
+   $('active-run').title=run.run_root;
+   state.awaitingRun=true;await refresh();await refreshSyncStatus();
+   if(new URLSearchParams(location.search).get('choose')==='1')openRunDialog();
+   return;
+  }
+  text('active-run','尚未选择测评 · 每次测评使用独立端口');
+  state.episodes=[];renderList();
+  const query=new URLSearchParams(location.search);
+  if(query.get('run')||query.get('evaluation')){
+   let data=await api('/api/runs');
+   for(let tries=0;data.pending&&!data.runs.length&&tries<20;tries++){
+    await new Promise(resolve=>setTimeout(resolve,500));data=await api('/api/runs');
+   }
+   const route=EvaluationScope.resolve(health,data.runs,query);
+   if(route.mode==='select'){await selectEvaluation(route.evaluation);return;}
+   await openRunDialog();text('run-error',route.reason||'请选择一次测评');return;
+  }
+  await openRunDialog();
+ }catch(error){text('connection',error.message);text('active-run','无法确认当前测评身份，请重试选择');await openRunDialog();}
 }
 $('choose-run').onclick=openRunDialog;$('refresh-runs').onclick=openRunDialog;$('run-search').oninput=renderRuns;
 $('close-runs').onclick=()=>$('run-dialog').close();
-if(!selectedRun||new URLSearchParams(location.search).get('choose')==='1')openRunDialog();
+initializeEvaluation();
+setInterval(()=>{if($('run-dialog').open&&!runDialogBusy)openRunDialog();},5000);

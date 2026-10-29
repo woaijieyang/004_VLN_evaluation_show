@@ -161,7 +161,17 @@ class Store:
     def create(self, meta):
         meta = validate_meta(meta)
         identity = [meta.get(k) for k in ("run_id", "attempt", "model", "dataset", "split", "scene_id", "episode_id", "instruction_id")]
-        eid = hashlib.sha256(dumps(identity).encode()).hexdigest()
+        legacy_eid = hashlib.sha256(dumps(identity).encode()).hexdigest()
+        eid = legacy_eid
+        if meta.get('source_run'):
+            from process_show.service.evaluations import source_key
+            source = source_key(meta['source_run'])
+            eid = hashlib.sha256(dumps(identity + [source]).encode()).hexdigest()
+            # Existing trace cursors and links keep their original identity.
+            with self.db() as db:
+                old = db.execute('SELECT meta FROM episodes WHERE id=?',(legacy_eid,)).fetchone()
+            if old and source_key(json.loads(old['meta']).get('source_run')) == source:
+                eid = legacy_eid
         group = "-".join(slug(meta[k]) for k in ("date", "stage", "dataset"))
         name = "-".join([slug(meta["dataset"]), slug(meta["split"]), slug(meta["scene_id"]), "ep"+slug(meta["episode_id"]), "inst"+slug(meta["instruction_id"] or "NA"), "run"+eid[:12], "attempt"+slug(meta["attempt"])])
         rel = str(Path(group) / name)

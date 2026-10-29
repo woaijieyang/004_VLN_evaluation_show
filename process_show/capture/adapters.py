@@ -10,6 +10,19 @@ from process_show.storage.core import confined, dumps
 from process_show.capture.engine import Engine, open_asset
 
 
+def generic_metadata(path):
+    """Inspect one bounded start record; partial writes are not complete episodes."""
+    try:
+        with path.open('rb') as stream:line=stream.readline(256*1024)
+        if not line.endswith(b'\n'):return None
+        event=json.loads(line)
+        if event.get('schema_version')==1 and event.get('type')=='start':
+            meta=event.get('metadata')
+            if isinstance(meta,dict) and all(isinstance(meta.get(k),str) and meta[k] for k in ('run_id','model')):return meta
+    except (OSError,ValueError,AttributeError):pass
+    return None
+
+
 def instruction_from_prompt(prompt):
     # Case1 official prompt contains Navigation Instruction: ... followed by context.
     patterns = [r'Your assigned task is: "(.*?)"\. (?:The reasoning from|Analyze this series)', r"(?:Navigation instruction|Navigation Instruction|Instruction|instruction):\s*(.*?)(?=\n(?:Reasoning|History|Current|Previous|ASSISTANT|###)|</s>|$)", r"instruction\s*[\"']([^\"']+)[\"']"]
@@ -35,6 +48,7 @@ class Importer:
         self.manifest=json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.is_file() else {}
         self.started_at = started_at or self.manifest.get("created_at")
         self.lazy=lazy
+        self.evaluation=None
 
     def _step(self,eid,step,rgb_ref=None):
         if self.lazy:
@@ -53,7 +67,10 @@ class Importer:
 
     def discover(self):
         pattern = "shards/shard-*/attempt-*/episodes/*/trace.jsonl" if self.adapter == "case1" else "*.jsonl"
-        return sorted(p for p in self.root.glob(pattern) if not p.is_symlink())
+        paths=sorted(p for p in self.root.glob(pattern) if not p.is_symlink())
+        if self.adapter!='case1' and self.evaluation:
+            paths=[p for p in paths if (lambda m:m and m['run_id']==self.evaluation['run_id'] and m['model']==self.evaluation['model'])(generic_metadata(p))]
+        return paths
 
     def poll(self, path, encode_now=False, max_events=None, max_seconds=None):
         path = confined(self.root,path)
@@ -89,7 +106,7 @@ class Importer:
                 if self.adapter == "case1":
                     self._case1(state,event,path,encode_now)
                 else:
-                    self._generic(state,event,encode_now)
+                    self._generic(state,event,encode_now,path)
                 offset = f.tell()
                 with self.store.db() as db:
                     db.execute("INSERT INTO imports VALUES (?,?,?) ON CONFLICT(path) DO UPDATE SET offset=excluded.offset,state=excluded.state",(key,offset,dumps(state)))
@@ -163,15 +180,17 @@ class Importer:
             result = {"status":"completed","total_steps":int(event["steps"]),"termination_reason":event.get("termination_reason"),"success":bool(success) if success in (0,1,False,True) else None,"metrics":native,"model_calls":event.get("model_calls"),"metrics_source":"existing terminal trace; not independently re-audited"}
             self.engine.end(state["eid"],result,encode_now)
 
-    def _generic(self,state,event,encode_now):
+    def _generic(self,state,event,encode_now,path=None):
         if event.get("schema_version") != 1:
             raise ValueError("Generic event requires schema_version=1")
         kind = event["type"]
         if kind == "start":
-            state["eid"] = self.engine.start(event["metadata"])
+            metadata=dict(event['metadata'],source_run=str(self.root),source_kind='generic_jsonl')
+            if path:metadata['source_trace']=str(path.relative_to(self.root))
+            state["eid"] = self.engine.start(metadata)
         elif kind == "step":
             s = dict(event["data"])
-            self.engine.step(state["eid"],s,open_asset(self.root,s.get("rgb_path")),open_asset(self.root,s.get("map_path")))
+            self.engine.step(state["eid"],s,open_asset(self.root,s.get("rgb_path")),open_asset(self.root,s.get("map_path")),render_preview=not self.lazy)
         elif kind == "end":
             self.engine.end(state["eid"],event["result"],encode_now)
         else:
